@@ -240,20 +240,29 @@ def get_first_port(container):
         return "N/A"
     return "N/A"
 
-def calculate_cpu_percent(stats):
+def calculate_cpu_percent(container):
     try:
-        cpu_stats = stats["cpu_stats"]
-        precpu_stats = stats["precpu_stats"]
+        stats = container.stats(stream=False)
+        cpu_percent = 0.0
 
-        cpu_delta = cpu_stats["cpu_usage"]["total_usage"] - precpu_stats["cpu_usage"]["total_usage"]
-        system_delta = cpu_stats["system_cpu_usage"] - precpu_stats["system_cpu_usage"]
-        cpu_count = len(cpu_stats["cpu_usage"].get("percpu_usage", []))
+        cpu_total = stats["cpu_stats"]["cpu_usage"]["total_usage"]
+        pre_cpu_total = stats["precpu_stats"]["cpu_usage"].get("total_usage", 0)
+        system_cpu_delta = stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"].get("system_cpu_usage", 0)
+        cpu_delta = cpu_total - pre_cpu_total
 
-        if system_delta > 0 and cpu_delta > 0:
-            return (cpu_delta / system_delta) * cpu_count * 100.0
+        if system_cpu_delta > 0 and cpu_delta > 0:
+            percpu_count = len(stats["cpu_stats"]["cpu_usage"].get("percpu_usage", []))
+            cpu_percent = (cpu_delta / system_cpu_delta) * percpu_count * 100.0
+        return cpu_percent
     except Exception as e:
-        logger.warning(f"Failed to calculate CPU percent: {e}")
-    return 0.0
+        logger.debug(f"Failed to calculate CPU percent for {container.name}: {e}")
+        return 0.0
+
+def get_cpu_percent(container, delay=1):
+    stats1 = container.stats(stream=False)
+    time.sleep(delay)
+    stats2 = container.stats(stream=False)
+    return calculate_cpu_percent_from_stats(stats1, stats2)
 
 def get_directory_size_mb(path):
     total = 0
@@ -307,7 +316,7 @@ def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)  # high-level object
         stats = container.stats(stream=False)
-        cpu_percent = calculate_cpu_percent(stats)
+        cpu_percent = get_cpu_percent(stats)
 
         mem_usage_mb = stats["memory_stats"]["usage"] / (1024**2)
         mem_limit_mb = stats["memory_stats"]["limit"] / (1024**2)
