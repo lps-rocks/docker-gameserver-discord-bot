@@ -11,11 +11,17 @@ import docker
 import datetime
 
 # ------------------------------
-# Load environment variables
+# Config directory
 # ------------------------------
-load_dotenv()
+CONFIG_DIR = "/config"
 
-# Required variables
+# Load .env from /config
+dotenv_path = os.path.join(CONFIG_DIR, ".env")
+load_dotenv(dotenv_path)
+
+# ------------------------------
+# Required environment variables
+# ------------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN is not set.")
@@ -29,7 +35,7 @@ except ValueError:
     raise ValueError("DISCORD_CHANNEL_ID must be an integer.")
 
 # ------------------------------
-# Parse containers from CONTAINER_1, CONTAINER_2, etc. using regex
+# Parse containers using regex CONTAINER_1, CONTAINER_3, etc.
 # ------------------------------
 container_pattern = re.compile(r"^CONTAINER_(\d+)$")
 container_entries = [(key, value) for key, value in os.environ.items() if container_pattern.match(key)]
@@ -37,7 +43,7 @@ container_entries = [(key, value) for key, value in os.environ.items() if contai
 if not container_entries:
     raise ValueError("No containers configured. Define environment variables like CONTAINER_1, CONTAINER_2, etc.")
 
-# Sort by numeric order
+# Sort by numeric suffix
 container_entries.sort(key=lambda x: int(container_pattern.match(x[0]).group(1)))
 
 CONTAINERS = []
@@ -63,7 +69,7 @@ for var_name, entry in container_entries:
     })
 
 # ------------------------------
-# Optional variables
+# Optional settings
 # ------------------------------
 ALLOWED_USERS_RAW = os.getenv("RESTART_ALLOWED_USERS", "")
 EMBED_TITLE = os.getenv("EMBED_TITLE", "Docker Status")
@@ -73,7 +79,7 @@ FIELD_TEMPLATE = os.getenv(
 )
 FIELD_NAME_TEMPLATE = os.getenv("CONTAINER_FIELD_NAME_TEMPLATE", "{alias} (`{name}`)")
 EMBED_COLOR_RAW = os.getenv("EMBED_COLOR", "0x3498DB")
-MESSAGE_STATE_FILE = os.getenv("MESSAGE_STATE_FILE", "message_state.json")
+MESSAGE_STATE_FILE = os.path.join(CONFIG_DIR, os.getenv("MESSAGE_STATE_FILE", "message_state.json"))
 
 # ------------------------------
 # Validate templates
@@ -92,7 +98,7 @@ if invalid_name_placeholders:
     raise ValueError(f"FIELD_NAME_TEMPLATE contains invalid placeholders: {', '.join(invalid_name_placeholders)}")
 
 # ------------------------------
-# Parse embed color
+# Embed color
 # ------------------------------
 try:
     EMBED_COLOR = int(EMBED_COLOR_RAW, 16)
@@ -101,7 +107,7 @@ except ValueError:
     EMBED_COLOR = 0x3498DB
 
 # ------------------------------
-# Parse allowed users
+# Allowed users for restart
 # ------------------------------
 ALLOWED_USERS = set()
 if ALLOWED_USERS_RAW:
@@ -153,17 +159,14 @@ def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)
         stats = container.stats(stream=False)
-        # CPU
         cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - stats["precpu_stats"]["cpu_usage"]["total_usage"]
         system_delta = stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"]["system_cpu_usage"]
         cpu_percent = 0.0
         if system_delta > 0 and cpu_delta > 0:
             cpu_percent = cpu_delta / system_delta * len(stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [])) * 100
-        # RAM
         mem_usage_mb = stats["memory_stats"]["usage"] / (1024**2)
         mem_limit_mb = stats["memory_stats"]["limit"] / (1024**2)
         mem_percent = (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0
-        # Disk
         disk_usage_mb = container.attrs.get("SizeRw", 0) / (1024**2)
         return {"status": container.status, "cpu": cpu_percent, "ram": format_size(mem_usage_mb), "ram_percent": mem_percent, "disk": format_size(disk_usage_mb)}
     except Exception as e:
@@ -189,7 +192,7 @@ def generate_embed():
     return embed
 
 # ------------------------------
-# Buttons
+# Buttons for restart
 # ------------------------------
 class RestartButton(Button):
     def __init__(self, alias, container, restart_allowed):
