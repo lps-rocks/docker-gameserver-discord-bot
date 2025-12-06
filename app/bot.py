@@ -4,6 +4,7 @@ import json
 import string
 import shlex
 import requests
+import logging
 import discord
 from discord.ext import commands, tasks
 from discord.ui import View, Button
@@ -12,12 +13,28 @@ import docker
 from datetime import datetime, timezone
 
 # ------------------------------
+# Logging configuration
+# ------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Enable debug logging if DEBUG=1 in .env
+if os.getenv("DEBUG", "0") == "1":
+    logger.setLevel(logging.DEBUG)
+    logger.debug("Debug logging enabled")
+
+# ------------------------------
 # Config directory
 # ------------------------------
 CONFIG_DIR = "/config"
 
 # Load .env from /config
 dotenv_path = os.path.join(CONFIG_DIR, ".env")
+logger.debug(f"Loading environment variables from {dotenv_path}")
 load_dotenv(dotenv_path)
 
 # ------------------------------
@@ -25,14 +42,17 @@ load_dotenv(dotenv_path)
 # ------------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
+    logger.error("DISCORD_TOKEN is not set.")
     raise ValueError("DISCORD_TOKEN is not set.")
 
 CHANNEL_ID_RAW = os.getenv("DISCORD_CHANNEL_ID")
 if not CHANNEL_ID_RAW:
+    logger.error("DISCORD_CHANNEL_ID is not set.")
     raise ValueError("DISCORD_CHANNEL_ID is not set.")
 try:
     CHANNEL_ID = int(CHANNEL_ID_RAW)
 except ValueError:
+    logger.error("DISCORD_CHANNEL_ID must be an integer.")
     raise ValueError("DISCORD_CHANNEL_ID must be an integer.")
 
 # ------------------------------
@@ -40,6 +60,8 @@ except ValueError:
 # ------------------------------
 container_pattern = re.compile(r"^CONTAINER_(\d+)$")
 container_entries = [(key, value) for key, value in os.environ.items() if container_pattern.match(key)]
+logger.debug(f"Detected container environment variables: {[key for key, _ in container_entries]}")
+
 if not container_entries:
     raise ValueError("No containers configured. Define environment variables like CONTAINER_1, CONTAINER_2, etc.")
 
@@ -61,12 +83,17 @@ for var_name, entry in container_entries:
     restart_allowed = len(parts) > 2 and parts[2].strip().lower() == "yes"
     description = parts[3] if len(parts) > 3 else ""
 
-    CONTAINERS.append({
+    container_info = {
         "alias": alias,
         "name": container_name,
         "restart_allowed": restart_allowed,
         "description": description
-    })
+    }
+    CONTAINERS.append(container_info)
+
+    logger.debug(f"Parsed container '{var_name}': {container_info}")
+
+logger.info(f"Total containers configured: {len(CONTAINERS)}")
 
 # ------------------------------
 # Optional settings
@@ -81,19 +108,29 @@ FIELD_NAME_TEMPLATE = os.getenv("CONTAINER_FIELD_NAME_TEMPLATE", "{alias} (`{nam
 EMBED_COLOR_RAW = os.getenv("EMBED_COLOR", "0x3498DB")
 MESSAGE_STATE_FILE = os.path.join(CONFIG_DIR, os.getenv("MESSAGE_STATE_FILE", "message_state.json"))
 
+logger.debug(f"RESTART_ALLOWED_USERS: {ALLOWED_USERS_RAW}")
+logger.debug(f"EMBED_TITLE: {EMBED_TITLE}")
+logger.debug(f"FIELD_TEMPLATE: {FIELD_TEMPLATE}")
+logger.debug(f"FIELD_NAME_TEMPLATE: {FIELD_NAME_TEMPLATE}")
+logger.debug(f"EMBED_COLOR: {EMBED_COLOR_RAW}")
+logger.debug(f"MESSAGE_STATE_FILE: {MESSAGE_STATE_FILE}")
+
 # ------------------------------
 # Validate templates
 # ------------------------------
 VALID_PLACEHOLDERS = {"alias", "name", "status", "cpu", "ram", "ram_percent", "disk",
                       "description", "external_ip", "port", "uptime"}
 formatter = string.Formatter()
+
 used_placeholders = {fname for _, fname, _, _ in formatter.parse(FIELD_TEMPLATE) if fname}
 invalid_placeholders = used_placeholders - VALID_PLACEHOLDERS
+logger.debug(f"FIELD_TEMPLATE placeholders detected: {used_placeholders}")
 if invalid_placeholders:
     raise ValueError(f"FIELD_TEMPLATE contains invalid placeholders: {', '.join(invalid_placeholders)}")
 
 used_name_placeholders = {fname for _, fname, _, _ in formatter.parse(FIELD_NAME_TEMPLATE) if fname}
 invalid_name_placeholders = used_name_placeholders - VALID_PLACEHOLDERS
+logger.debug(f"FIELD_NAME_TEMPLATE placeholders detected: {used_name_placeholders}")
 if invalid_name_placeholders:
     raise ValueError(f"FIELD_NAME_TEMPLATE contains invalid placeholders: {', '.join(invalid_name_placeholders)}")
 
@@ -103,7 +140,7 @@ if invalid_name_placeholders:
 try:
     EMBED_COLOR = int(EMBED_COLOR_RAW, 16)
 except ValueError:
-    print(f"Invalid EMBED_COLOR '{EMBED_COLOR_RAW}', defaulting to 0x3498DB")
+    logger.warning(f"Invalid EMBED_COLOR '{EMBED_COLOR_RAW}', defaulting to 0x3498DB")
     EMBED_COLOR = 0x3498DB
 
 # ------------------------------
@@ -116,14 +153,17 @@ if ALLOWED_USERS_RAW:
         if u.isdigit():
             ALLOWED_USERS.add(int(u))
         else:
-            print(f"Warning: '{u}' in RESTART_ALLOWED_USERS is not a valid Discord ID and will be ignored.")
+            logger.warning(f"'{u}' in RESTART_ALLOWED_USERS is not a valid Discord ID and will be ignored.")
+logger.debug(f"ALLOWED_USERS set: {ALLOWED_USERS}")
 
 # ------------------------------
 # Docker client
 # ------------------------------
 try:
     client = docker.from_env()
+    logger.info("Docker client initialized successfully")
 except Exception as e:
+    logger.error(f"Failed to connect to Docker: {e}")
     raise RuntimeError(f"Failed to connect to Docker: {e}")
 
 # ------------------------------
@@ -142,17 +182,19 @@ def save_message_id(channel_id, message_id):
     try:
         with open(MESSAGE_STATE_FILE, "w") as f:
             json.dump({"channel_id": channel_id, "message_id": message_id}, f)
+        logger.debug(f"Saved message state: channel={channel_id}, message={message_id}")
     except Exception as e:
-        print(f"Warning: Failed to save message state: {e}")
+        logger.warning(f"Failed to save message state: {e}")
 
 def load_message_id():
     if os.path.exists(MESSAGE_STATE_FILE):
         try:
             with open(MESSAGE_STATE_FILE, "r") as f:
                 data = json.load(f)
+                logger.debug(f"Loaded message state: {data}")
                 return data.get("channel_id"), data.get("message_id")
         except Exception as e:
-            print(f"Warning: Failed to load message state: {e}")
+            logger.warning(f"Failed to load message state: {e}")
     return None, None
 
 # ------------------------------
@@ -166,9 +208,9 @@ def fetch_external_ip():
         response = requests.get("https://icanhazip.com", timeout=5)
         if response.status_code == 200:
             EXTERNAL_IP = response.text.strip()
-            print(f"External IP updated: {EXTERNAL_IP}")
+            logger.info(f"External IP updated: {EXTERNAL_IP}")
     except Exception as e:
-        print(f"Warning: Failed to fetch external IP: {e}")
+        logger.warning(f"Failed to fetch external IP: {e}")
 
 # Fetch once at startup
 fetch_external_ip()
@@ -221,6 +263,7 @@ def get_container_stats(container_name):
         uptime = format_uptime(container)
         external_ip = EXTERNAL_IP
 
+        logger.debug(f"Stats for {container_name}: cpu={cpu_percent}, ram={mem_usage_mb}MB, disk={disk_usage_mb}MB")
         return {
             "status": container.status,
             "cpu": cpu_percent,
@@ -232,8 +275,12 @@ def get_container_stats(container_name):
             "external_ip": external_ip
         }
     except Exception as e:
+        logger.error(f"Failed to get stats for {container_name}: {e}")
         return {"error": str(e)}
 
+# ------------------------------
+# Embed generation
+# ------------------------------
 def generate_embed():
     embed = discord.Embed(title=EMBED_TITLE, color=EMBED_COLOR, timestamp=datetime.utcnow())
     for c in CONTAINERS:
@@ -273,14 +320,17 @@ class RestartButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id not in ALLOWED_USERS:
+            logger.warning(f"Unauthorized restart attempt by {interaction.user} for {self.alias}")
             await interaction.response.send_message("⛔ You are not allowed to restart containers.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         try:
             cont = client.containers.get(self.container)
             cont.restart()
+            logger.info(f"Container {self.alias} restarted by {interaction.user}")
             await interaction.followup.send(f"🔁 Restarted **{self.alias}** (`{self.container}`).", ephemeral=True)
         except Exception as e:
+            logger.error(f"Failed to restart {self.alias}: {e}")
             await interaction.followup.send(f"❌ Failed to restart **{self.alias}**\nError: `{e}`", ephemeral=True)
 
 class RestartView(View):
@@ -302,33 +352,35 @@ async def update_message():
         embed = generate_embed()
         try:
             await message_to_update.edit(embed=embed, view=RestartView())
+            logger.debug(f"Updated message {message_to_update.id}")
         except Exception as e:
-            print(f"Warning: Failed to update message: {e}")
+            logger.warning(f"Failed to update message: {e}")
 
 # ------------------------------
 # External IP updater every 6 hours
 # ------------------------------
 @tasks.loop(hours=6)
 async def update_external_ip():
+    logger.info("Updating external IP...")
     fetch_external_ip()
 
 @bot.event
 async def on_ready():
     global message_to_update
-    print(f"Logged in as {bot.user}")
+    logger.info(f"Logged in as {bot.user}")
 
     saved_channel_id, saved_message_id = load_message_id()
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
-        print("Error: Channel not found.")
+        logger.error("Channel not found.")
         return
 
     try:
         if saved_channel_id == CHANNEL_ID and saved_message_id:
             message_to_update = await channel.fetch_message(saved_message_id)
-            print(f"Resuming updates on message {saved_message_id}")
+            logger.info(f"Resuming updates on message {saved_message_id}")
     except Exception as e:
-        print(f"Warning: Failed to fetch saved message: {e}")
+        logger.warning(f"Failed to fetch saved message: {e}")
         message_to_update = None
 
     if not message_to_update:
@@ -337,9 +389,9 @@ async def on_ready():
         try:
             message_to_update = await channel.send(embed=embed, view=view)
             save_message_id(CHANNEL_ID, message_to_update.id)
-            print(f"Created new message {message_to_update.id}")
+            logger.info(f"Created new message {message_to_update.id}")
         except Exception as e:
-            print(f"Error: Failed to send new message: {e}")
+            logger.error(f"Failed to send new message: {e}")
 
     update_message.start()
     update_external_ip.start()
