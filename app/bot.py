@@ -54,7 +54,7 @@ except ValueError:
     sys.exit(1)
 
 # ------------------------------
-# Parse containers using regex CONTAINER_1, CONTAINER_2, etc. (colon split)
+# Parse containers using regex CONTAINER_1, CONTAINER_2, etc.
 # ------------------------------
 container_pattern = re.compile(r"^CONTAINER_(\d+)$")
 container_entries = [(key, value) for key, value in os.environ.items() if container_pattern.match(key)]
@@ -119,7 +119,7 @@ logger.debug(f"EMBED_COLOR: {EMBED_COLOR_RAW}")
 logger.debug(f"MESSAGE_STATE_FILE: {MESSAGE_STATE_FILE}")
 
 # ------------------------------
-# Validate templates (all placeholders allowed in both templates)
+# Validate templates
 # ------------------------------
 VALID_PLACEHOLDERS = {"alias", "name", "status", "cpu", "ram", "ram_percent", "disk",
                       "description", "external_ip", "port", "uptime"}
@@ -210,7 +210,6 @@ def fetch_external_ip():
     except Exception as e:
         logger.warning(f"Failed to fetch external IP: {e}")
 
-# Fetch once at startup
 fetch_external_ip()
 
 # ------------------------------
@@ -235,44 +234,38 @@ def get_first_port(container):
             if mappings:
                 host_port = mappings[0].get("HostPort")
                 if host_port:
-                    return host_port  # return only host mapped port
+                    return host_port
     except Exception:
         return "N/A"
     return "N/A"
 
+def calculate_cpu_percent(stats):
+    try:
+        cpu_stats = stats["cpu_stats"]
+        precpu_stats = stats["precpu_stats"]
+
+        cpu_delta = cpu_stats["cpu_usage"]["total_usage"] - precpu_stats["cpu_usage"]["total_usage"]
+        system_delta = cpu_stats["system_cpu_usage"] - precpu_stats["system_cpu_usage"]
+        cpu_count = len(cpu_stats["cpu_usage"].get("percpu_usage", []))
+
+        if system_delta > 0 and cpu_delta > 0:
+            return (cpu_delta / system_delta) * cpu_count * 100.0
+    except Exception as e:
+        logger.warning(f"Failed to calculate CPU percent: {e}")
+    return 0.0
+
 def get_container_stats(container_name):
     try:
-        container = client.containers.get(container_name, size=True)
+        container = client.containers.get(container_name, size=True)  # size=True fixes disk usage
         stats = container.stats(stream=False)
 
-        # CPU calculation
-        cpu_percent = 0.0
-        try:
-            cpu_stats = stats["cpu_stats"]
-            precpu_stats = stats.get("precpu_stats", {})
+        cpu_percent = calculate_cpu_percent(stats)
 
-            cpu_total = cpu_stats["cpu_usage"]["total_usage"]
-            pre_cpu_total = precpu_stats.get("cpu_usage", {}).get("total_usage", 0)
-
-            system_total = cpu_stats.get("system_cpu_usage", 0)
-            pre_system_total = precpu_stats.get("system_cpu_usage", 0)
-
-            cpu_delta = cpu_total - pre_cpu_total
-            system_delta = system_total - pre_system_total
-
-            if system_delta > 0 and cpu_delta > 0:
-                cpu_percent = (cpu_delta / system_delta) * len(cpu_stats["cpu_usage"].get("percpu_usage", [])) * 100.0
-        except Exception as e:
-            logger.warning(f"Failed to calculate CPU for {container_name}: {e}")
-
-        # RAM
         mem_usage_mb = stats["memory_stats"]["usage"] / (1024**2)
         mem_limit_mb = stats["memory_stats"]["limit"] / (1024**2)
         mem_percent = (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0
 
-        # Disk usage
         disk_usage_mb = container.attrs.get("SizeRw", 0) / (1024**2)
-
         port = get_first_port(container)
         uptime = format_uptime(container)
         external_ip = EXTERNAL_IP
@@ -323,7 +316,6 @@ def generate_embed():
             field_value = FIELD_TEMPLATE.format(**placeholders)
 
         field_name = FIELD_NAME_TEMPLATE.format(**placeholders)
-
         embed.add_field(name=field_name, value=field_value, inline=False)
     return embed
 
