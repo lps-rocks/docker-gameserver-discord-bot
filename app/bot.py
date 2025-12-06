@@ -302,17 +302,13 @@ def get_container_disk_usage(container):
 def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)  # high-level object
-        
+        stats = container.stats(stream=False)
         # ------------------------------
         # CPU Usage
         # ------------------------------
-        stats = container.stats(stream=True)
-
-        # Get two snapshots of CPU usage, calculate delta
-        stats1 = next(stats)
         time.sleep(1)
-        stats2 = next(stats)
-        cpu_percent = calculate_cpu_percent_from_stats(stats1, stats2)
+        stats2 = container.stats(stream=False)
+        cpu_percent = calculate_cpu_percent_from_stats(stats, stats2)
         
         # ------------------------------
         # RAM Usage
