@@ -4,7 +4,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Copy bot files
-COPY . /app
+COPY app/ /app
 
 # Install dependencies
 RUN pip install --no-cache-dir --upgrade pip \
