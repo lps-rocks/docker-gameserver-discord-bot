@@ -242,7 +242,7 @@ def get_first_port(container):
 
 def get_container_stats(container_name):
     try:
-        container = client.containers.get(container_name)
+        container = client.containers.get(container_name, size=True)
         stats = container.stats(stream=False)
 
         # CPU calculation
