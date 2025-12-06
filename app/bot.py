@@ -257,8 +257,6 @@ def calculate_cpu_percent(stats):
 def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)  # high-level object
-        attrs = client.api.inspect_container(container_name, size=True)  # get size info
-
         stats = container.stats(stream=False)
         cpu_percent = calculate_cpu_percent(stats)
 
@@ -266,7 +264,19 @@ def get_container_stats(container_name):
         mem_limit_mb = stats["memory_stats"]["limit"] / (1024**2)
         mem_percent = (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0
 
-        disk_usage_mb = attrs.get("SizeRw", 0) / (1024**2)
+        # ------------------------------
+        # Disk usage via df
+        # ------------------------------
+        disk_usage_mb = 0
+        try:
+            df_containers = client.api.df()["Containers"]
+            for c in df_containers:
+                if c["Id"].startswith(container.id):
+                    disk_usage_mb = c.get("SizeRw", 0) / (1024**2)
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to get disk usage for {container_name}: {e}")
+
         port = get_first_port(container)
         uptime = format_uptime(container)
         external_ip = EXTERNAL_IP
