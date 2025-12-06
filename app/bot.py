@@ -114,25 +114,20 @@ logger.debug(f"EMBED_COLOR: {EMBED_COLOR_RAW}")
 logger.debug(f"MESSAGE_STATE_FILE: {MESSAGE_STATE_FILE}")
 
 # ------------------------------
-# Validate templates
+# Validate templates (all placeholders allowed in both templates)
 # ------------------------------
 VALID_PLACEHOLDERS = {"alias", "name", "status", "cpu", "ram", "ram_percent", "disk",
                       "description", "external_ip", "port", "uptime"}
+
 formatter = string.Formatter()
 
-used_placeholders = {fname for _, fname, _, _ in formatter.parse(FIELD_TEMPLATE) if fname}
-invalid_placeholders = used_placeholders - VALID_PLACEHOLDERS
-logger.debug(f"FIELD_TEMPLATE placeholders detected: {used_placeholders}")
-if invalid_placeholders:
-    logger.critical(f"FIELD_TEMPLATE contains invalid placeholders: {', '.join(invalid_placeholders)}. Exiting.")
-    sys.exit(1)
-
-used_name_placeholders = {fname for _, fname, _, _ in formatter.parse(FIELD_NAME_TEMPLATE) if fname}
-invalid_name_placeholders = used_name_placeholders - VALID_PLACEHOLDERS
-logger.debug(f"FIELD_NAME_TEMPLATE placeholders detected: {used_name_placeholders}")
-if invalid_name_placeholders:
-    logger.critical(f"FIELD_NAME_TEMPLATE contains invalid placeholders: {', '.join(invalid_name_placeholders)}. Exiting.")
-    sys.exit(1)
+for template_name, template in [("FIELD_TEMPLATE", FIELD_TEMPLATE), ("FIELD_NAME_TEMPLATE", FIELD_NAME_TEMPLATE)]:
+    used_placeholders = {fname for _, fname, _, _ in formatter.parse(template) if fname}
+    invalid_placeholders = used_placeholders - VALID_PLACEHOLDERS
+    logger.debug(f"{template_name} placeholders detected: {used_placeholders}")
+    if invalid_placeholders:
+        logger.critical(f"{template_name} contains invalid placeholders: {', '.join(invalid_placeholders)}. Exiting.")
+        sys.exit(1)
 
 # ------------------------------
 # Embed color
@@ -246,24 +241,39 @@ def get_container_stats(container_name):
         container = client.containers.get(container_name)
         stats = container.stats(stream=False)
 
-        # CPU calculation
-        cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - stats["precpu_stats"]["cpu_usage"]["total_usage"]
-        system_delta = stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"]["system_cpu_usage"]
+        # CPU calculation (robust)
         cpu_percent = 0.0
-        if system_delta > 0 and cpu_delta > 0:
-            cpu_percent = cpu_delta / system_delta * len(stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [])) * 100
+        try:
+            cpu_stats = stats["cpu_stats"]
+            precpu_stats = stats.get("precpu_stats", {})
 
+            cpu_total = cpu_stats["cpu_usage"]["total_usage"]
+            pre_cpu_total = precpu_stats.get("cpu_usage", {}).get("total_usage", 0)
+
+            system_total = cpu_stats.get("system_cpu_usage", 0)
+            pre_system_total = precpu_stats.get("system_cpu_usage", 0)
+
+            cpu_delta = cpu_total - pre_cpu_total
+            system_delta = system_total - pre_system_total
+
+            if system_delta > 0 and cpu_delta > 0:
+                cpu_percent = (cpu_delta / system_delta) * len(cpu_stats["cpu_usage"].get("percpu_usage", [])) * 100.0
+        except Exception as e:
+            logger.warning(f"Failed to calculate CPU for {container_name}: {e}")
+
+        # RAM
         mem_usage_mb = stats["memory_stats"]["usage"] / (1024**2)
         mem_limit_mb = stats["memory_stats"]["limit"] / (1024**2)
         mem_percent = (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0
 
+        # Disk usage
         disk_usage_mb = container.attrs.get("SizeRw", 0) / (1024**2)
 
         port = get_first_port(container)
         uptime = format_uptime(container)
         external_ip = EXTERNAL_IP
 
-        logger.debug(f"Stats for {container_name}: cpu={cpu_percent}, ram={mem_usage_mb}MB, disk={disk_usage_mb}MB")
+        logger.debug(f"Stats for {container_name}: cpu={cpu_percent:.2f}, ram={mem_usage_mb:.2f}MB, disk={disk_usage_mb:.2f}MB")
         return {
             "status": container.status,
             "cpu": cpu_percent,
@@ -288,23 +298,30 @@ def generate_embed():
         name = c["name"]
         description = c["description"]
         stats = get_container_stats(name)
+
+        # Prepare all placeholders
+        placeholders = {
+            "alias": alias,
+            "name": name,
+            "status": stats.get("status", "N/A"),
+            "cpu": stats.get("cpu", 0.0),
+            "ram": stats.get("ram", "N/A"),
+            "ram_percent": stats.get("ram_percent", 0.0),
+            "disk": stats.get("disk", "N/A"),
+            "port": stats.get("port", "N/A"),
+            "uptime": stats.get("uptime", "N/A"),
+            "description": description,
+            "external_ip": stats.get("external_ip", "N/A")
+        }
+
+        # Render field value and name with all placeholders
         if "error" in stats:
             field_value = f"❌ Error: `{stats['error']}`"
         else:
-            field_value = FIELD_TEMPLATE.format(
-                alias=alias,
-                name=name,
-                status=stats["status"],
-                cpu=stats["cpu"],
-                ram=stats["ram"],
-                ram_percent=stats["ram_percent"],
-                disk=stats["disk"],
-                port=stats["port"],
-                uptime=stats["uptime"],
-                description=description,
-                external_ip=stats["external_ip"]
-            )
-        field_name = FIELD_NAME_TEMPLATE.format(alias=alias, name=name, description=description)
+            field_value = FIELD_TEMPLATE.format(**placeholders)
+
+        field_name = FIELD_NAME_TEMPLATE.format(**placeholders)
+
         embed.add_field(name=field_name, value=field_value, inline=False)
     return embed
 
