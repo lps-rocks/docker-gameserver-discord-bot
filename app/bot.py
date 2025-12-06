@@ -240,29 +240,16 @@ def get_first_port(container):
         return "N/A"
     return "N/A"
 
-def calculate_cpu_percent(container):
+def calculate_cpu_percent_from_stats(stats1, stats2):
     try:
-        stats = container.stats(stream=False)
-        cpu_percent = 0.0
-
-        cpu_total = stats["cpu_stats"]["cpu_usage"]["total_usage"]
-        pre_cpu_total = stats["precpu_stats"]["cpu_usage"].get("total_usage", 0)
-        system_cpu_delta = stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"].get("system_cpu_usage", 0)
-        cpu_delta = cpu_total - pre_cpu_total
-
-        if system_cpu_delta > 0 and cpu_delta > 0:
-            percpu_count = len(stats["cpu_stats"]["cpu_usage"].get("percpu_usage", []))
-            cpu_percent = (cpu_delta / system_cpu_delta) * percpu_count * 100.0
-        return cpu_percent
-    except Exception as e:
-        logger.debug(f"Failed to calculate CPU percent for {container.name}: {e}")
+        cpu_delta = stats2["cpu_stats"]["cpu_usage"]["total_usage"] - stats1["cpu_stats"]["cpu_usage"]["total_usage"]
+        system_delta = stats2["cpu_stats"]["system_cpu_usage"] - stats1["cpu_stats"].get("system_cpu_usage", 0)
+        percpu_count = len(stats2["cpu_stats"]["cpu_usage"].get("percpu_usage", []))
+        if system_delta > 0 and cpu_delta > 0:
+            return (cpu_delta / system_delta) * percpu_count * 100.0
         return 0.0
-
-def get_cpu_percent(container, delay=1):
-    stats1 = container.stats(stream=False)
-    time.sleep(delay)
-    stats2 = container.stats(stream=False)
-    return calculate_cpu_percent_from_stats(stats1, stats2)
+    except Exception:
+        return 0.0
 
 def get_directory_size_mb(path):
     total = 0
