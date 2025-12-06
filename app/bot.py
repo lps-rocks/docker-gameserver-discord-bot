@@ -2,7 +2,6 @@ import os
 import re
 import json
 import string
-import shlex
 import sys
 import requests
 import logging
@@ -23,7 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Enable debug logging if DEBUG=1 in .env
 if os.getenv("DEBUG", "0") == "1":
     logger.setLevel(logging.DEBUG)
     logger.debug("Debug logging enabled")
@@ -57,7 +55,7 @@ except ValueError:
     sys.exit(1)
 
 # ------------------------------
-# Parse containers using regex CONTAINER_1, CONTAINER_3, etc.
+# Parse containers using regex CONTAINER_1, CONTAINER_2, etc. (colon split)
 # ------------------------------
 container_pattern = re.compile(r"^CONTAINER_(\d+)$")
 container_entries = [(key, value) for key, value in os.environ.items() if container_pattern.match(key)]
@@ -72,20 +70,17 @@ container_entries.sort(key=lambda x: int(container_pattern.match(x[0]).group(1))
 
 CONTAINERS = []
 for var_name, entry in container_entries:
-    try:
-        parts = shlex.split(entry)
-    except ValueError as e:
-        logger.critical(f"Failed to parse container entry '{var_name}': {e}. Exiting.")
-        sys.exit(1)
-
+    # Split into max 4 parts: alias, docker_name, restart_allowed, description
+    parts = entry.split(":", 3)
+    
     if len(parts) < 2:
         logger.critical(f"Container entry '{var_name}' must have at least alias and docker_name. Exiting.")
         sys.exit(1)
-
-    alias = parts[0]
-    container_name = parts[1]
+    
+    alias = parts[0].strip()
+    container_name = parts[1].strip()
     restart_allowed = len(parts) > 2 and parts[2].strip().lower() == "yes"
-    description = parts[3] if len(parts) > 3 else ""
+    description = parts[3].strip() if len(parts) > 3 else ""
 
     container_info = {
         "alias": alias,
@@ -94,7 +89,6 @@ for var_name, entry in container_entries:
         "description": description
     }
     CONTAINERS.append(container_info)
-
     logger.debug(f"Parsed container '{var_name}': {container_info}")
 
 logger.info(f"Total containers configured: {len(CONTAINERS)}")
