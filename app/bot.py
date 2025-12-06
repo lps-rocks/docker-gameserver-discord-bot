@@ -335,7 +335,7 @@ def get_container_stats(container_name):
         uptime = format_uptime(container)
         external_ip = EXTERNAL_IP
 
-        health = container.attrs["State"].get("Health", "Unknown")
+        health = container.attrs["State"].get("Health", {}).get("Status", "")
         status = container.status
         
         if status == "running" and health == "healthy":
