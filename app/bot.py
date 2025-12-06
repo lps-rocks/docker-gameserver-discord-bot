@@ -302,7 +302,7 @@ def get_container_disk_usage(container):
 def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)  # high-level object
-        stats = container.stats()
+        stats = container.stats(decode=True)
         # ------------------------------
         # CPU Usage
         # ------------------------------
