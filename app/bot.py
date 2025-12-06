@@ -302,19 +302,20 @@ def get_container_disk_usage(container):
 def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)  # high-level object
-        stats = container.stats(stream=False)
+        stats = container.stats()
         # ------------------------------
         # CPU Usage
         # ------------------------------
+        stats1 = next(stats)
         time.sleep(1)
-        stats2 = container.stats(stream=False)
-        cpu_percent = calculate_cpu_percent_from_stats(stats, stats2)
+        stats2 = next(stats)
+        cpu_percent = calculate_cpu_percent_from_stats(stats1, stats2)
         
         # ------------------------------
         # RAM Usage
         # ------------------------------
-        mem_usage_mb = stats["memory_stats"]["usage"] / (1024**2)
-        mem_limit_mb = stats["memory_stats"]["limit"] / (1024**2)
+        mem_usage_mb = stats1["memory_stats"]["usage"] / (1024**2)
+        mem_limit_mb = stats1["memory_stats"]["limit"] / (1024**2)
         mem_percent = (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0
 
         # ------------------------------
