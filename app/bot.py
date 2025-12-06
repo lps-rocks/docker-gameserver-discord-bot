@@ -307,7 +307,7 @@ def get_container_stats(container_name):
         # CPU Usage
         # ------------------------------
         stats1 = next(stats)
-        time.sleep(1)
+        time.sleep(5)
         stats2 = next(stats)
         cpu_percent = calculate_cpu_percent_from_stats(stats1, stats2)
         
