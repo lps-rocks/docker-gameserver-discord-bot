@@ -123,7 +123,7 @@ logger.debug(f"MESSAGE_STATE_FILE: {MESSAGE_STATE_FILE}")
 # Validate templates
 # ------------------------------
 VALID_PLACEHOLDERS = {"alias", "name", "status", "cpu", "ram", "ram_percent", "disk",
-                      "description", "external_ip", "port", "uptime"}
+                      "description", "external_ip", "port", "uptime", "health", "status_icon"}
 
 formatter = string.Formatter()
 for template_name, template in [("FIELD_TEMPLATE", FIELD_TEMPLATE), ("FIELD_NAME_TEMPLATE", FIELD_NAME_TEMPLATE)]:
@@ -335,8 +335,26 @@ def get_container_stats(container_name):
         uptime = format_uptime(container)
         external_ip = EXTERNAL_IP
 
+        health = container.attrs["State"].get("Health", "Unknown")
+        status = container.status
+        
+        if status == "running" and health == "healthy":
+            status_icon = "🟢"
+        elif status == 'exited' or (status == "running" and health == "unhealthy"):
+            status_icon = "🔴"
+        elif status in ['starting', 'restarting'] or (status == "running" and health == "starting"):
+            status_icon = "🟠"
+        elif status == 'paused':
+            status_icon = "🟡"
+        elif status == 'dead':
+            status_icon = "❌"
+        else:
+            status_icon = "❓"
+
         return {
-            "status": container.status,
+            "status": status,
+            "health": health,
+            "status_icon": status_icon,
             "cpu": cpu_percent,
             "ram": format_size(mem_usage_mb),
             "ram_percent": mem_percent,
@@ -364,6 +382,8 @@ def generate_embed():
             "alias": alias,
             "name": name,
             "status": stats.get("status", "N/A"),
+            "health": stats.get("health", "N/A"),
+            "status_icon": stats.get("status_icon", "❌"),
             "cpu": stats.get("cpu", 0.0),
             "ram": stats.get("ram", "N/A"),
             "ram_percent": stats.get("ram_percent", 0.0),
