@@ -3,6 +3,7 @@ import re
 import json
 import string
 import shlex
+import sys
 import requests
 import logging
 import discord
@@ -42,18 +43,18 @@ load_dotenv(dotenv_path)
 # ------------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    logger.error("DISCORD_TOKEN is not set.")
-    raise ValueError("DISCORD_TOKEN is not set.")
+    logger.critical("DISCORD_TOKEN is not set. Exiting.")
+    sys.exit(1)
 
 CHANNEL_ID_RAW = os.getenv("DISCORD_CHANNEL_ID")
 if not CHANNEL_ID_RAW:
-    logger.error("DISCORD_CHANNEL_ID is not set.")
-    raise ValueError("DISCORD_CHANNEL_ID is not set.")
+    logger.critical("DISCORD_CHANNEL_ID is not set. Exiting.")
+    sys.exit(1)
 try:
     CHANNEL_ID = int(CHANNEL_ID_RAW)
 except ValueError:
-    logger.error("DISCORD_CHANNEL_ID must be an integer.")
-    raise ValueError("DISCORD_CHANNEL_ID must be an integer.")
+    logger.critical("DISCORD_CHANNEL_ID must be an integer. Exiting.")
+    sys.exit(1)
 
 # ------------------------------
 # Parse containers using regex CONTAINER_1, CONTAINER_3, etc.
@@ -63,7 +64,8 @@ container_entries = [(key, value) for key, value in os.environ.items() if contai
 logger.debug(f"Detected container environment variables: {[key for key, _ in container_entries]}")
 
 if not container_entries:
-    raise ValueError("No containers configured. Define environment variables like CONTAINER_1, CONTAINER_2, etc.")
+    logger.critical("No containers configured. Define environment variables like CONTAINER_1, CONTAINER_2, etc. Exiting.")
+    sys.exit(1)
 
 # Sort by numeric suffix
 container_entries.sort(key=lambda x: int(container_pattern.match(x[0]).group(1)))
@@ -73,10 +75,12 @@ for var_name, entry in container_entries:
     try:
         parts = shlex.split(entry)
     except ValueError as e:
-        raise ValueError(f"Failed to parse container entry '{var_name}': {e}")
+        logger.critical(f"Failed to parse container entry '{var_name}': {e}. Exiting.")
+        sys.exit(1)
 
     if len(parts) < 2:
-        raise ValueError(f"Container entry '{var_name}' must have at least alias and docker_name")
+        logger.critical(f"Container entry '{var_name}' must have at least alias and docker_name. Exiting.")
+        sys.exit(1)
 
     alias = parts[0]
     container_name = parts[1]
@@ -126,13 +130,15 @@ used_placeholders = {fname for _, fname, _, _ in formatter.parse(FIELD_TEMPLATE)
 invalid_placeholders = used_placeholders - VALID_PLACEHOLDERS
 logger.debug(f"FIELD_TEMPLATE placeholders detected: {used_placeholders}")
 if invalid_placeholders:
-    raise ValueError(f"FIELD_TEMPLATE contains invalid placeholders: {', '.join(invalid_placeholders)}")
+    logger.critical(f"FIELD_TEMPLATE contains invalid placeholders: {', '.join(invalid_placeholders)}. Exiting.")
+    sys.exit(1)
 
 used_name_placeholders = {fname for _, fname, _, _ in formatter.parse(FIELD_NAME_TEMPLATE) if fname}
 invalid_name_placeholders = used_name_placeholders - VALID_PLACEHOLDERS
 logger.debug(f"FIELD_NAME_TEMPLATE placeholders detected: {used_name_placeholders}")
 if invalid_name_placeholders:
-    raise ValueError(f"FIELD_NAME_TEMPLATE contains invalid placeholders: {', '.join(invalid_name_placeholders)}")
+    logger.critical(f"FIELD_NAME_TEMPLATE contains invalid placeholders: {', '.join(invalid_name_placeholders)}. Exiting.")
+    sys.exit(1)
 
 # ------------------------------
 # Embed color
@@ -163,8 +169,8 @@ try:
     client = docker.from_env()
     logger.info("Docker client initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to connect to Docker: {e}")
-    raise RuntimeError(f"Failed to connect to Docker: {e}")
+    logger.critical(f"Failed to connect to Docker: {e}. Exiting.")
+    sys.exit(1)
 
 # ------------------------------
 # Helpers
@@ -372,8 +378,8 @@ async def on_ready():
     saved_channel_id, saved_message_id = load_message_id()
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
-        logger.error("Channel not found.")
-        return
+        logger.critical("Channel not found. Exiting.")
+        sys.exit(1)
 
     try:
         if saved_channel_id == CHANNEL_ID and saved_message_id:
@@ -391,7 +397,8 @@ async def on_ready():
             save_message_id(CHANNEL_ID, message_to_update.id)
             logger.info(f"Created new message {message_to_update.id}")
         except Exception as e:
-            logger.error(f"Failed to send new message: {e}")
+            logger.critical(f"Failed to send new message: {e}. Exiting.")
+            sys.exit(1)
 
     update_message.start()
     update_external_ip.start()
