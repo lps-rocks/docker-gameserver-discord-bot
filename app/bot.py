@@ -11,6 +11,7 @@ from discord.ui import View, Button
 from dotenv import load_dotenv
 import docker
 from datetime import datetime, timezone
+import asyncio
 import time
 
 # ------------------------------
@@ -307,7 +308,7 @@ def get_container_stats(container_name):
         # CPU Usage
         # ------------------------------
         stats1 = next(stats)
-        time.sleep(5)
+        await asyncio.sleep(5)
         stats2 = next(stats)
         cpu_percent = calculate_cpu_percent_from_stats(stats1, stats2)
         
