@@ -244,7 +244,7 @@ def calculate_cpu_percent_from_stats(stats1, stats2):
     try:
         cpu_delta = stats2["cpu_stats"]["cpu_usage"]["total_usage"] - stats1["cpu_stats"]["cpu_usage"]["total_usage"]
         system_delta = stats2["cpu_stats"]["system_cpu_usage"] - stats1["cpu_stats"].get("system_cpu_usage", 0)
-        percpu_count = len(stats2["cpu_stats"]["cpu_usage"].get("percpu_usage", []))
+        percpu_count = stats1["cpu_stats"].get('online_cpus' , len(stats2["cpu_stats"]["cpu_usage"].get("percpu_usage", [])))
         if system_delta > 0 and cpu_delta > 0:
             return (cpu_delta / system_delta) * percpu_count * 100.0
         return 0.0
@@ -307,7 +307,7 @@ def get_container_stats(container_name):
         # CPU Usage
         # ------------------------------
         stats1 = next(stats)
-        time.sleep(5)
+        time.sleep(1)
         stats2 = next(stats)
         cpu_percent = calculate_cpu_percent_from_stats(stats1, stats2)
         
