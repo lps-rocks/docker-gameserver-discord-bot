@@ -254,6 +254,21 @@ def calculate_cpu_percent(stats):
         logger.warning(f"Failed to calculate CPU percent: {e}")
     return 0.0
 
+def get_directory_size_mb(path):
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        for f in filenames:
+            try:
+                fp = os.path.join(dirpath, f)
+                total += os.path.getsize(fp)
+            except Exception:
+                pass
+    return total / (1024**2)
+
+DISK_UPDATE_INTERVAL = 6 * 60 * 60  # 6 hours
+LAST_DISK_UPDATE = {}  # {container_name: timestamp}
+DISK_USAGE_CACHE = {}  # {container_name: mb}
+
 def get_container_stats(container_name):
     try:
         container = client.containers.get(container_name)  # high-level object
@@ -265,17 +280,33 @@ def get_container_stats(container_name):
         mem_percent = (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0
 
         # ------------------------------
-        # Disk usage via df
+        # Disk usage (refresh every 6 hours)
         # ------------------------------
-        disk_usage_mb = 0
-        try:
-            df_containers = client.api.df()["Containers"]
-            for c in df_containers:
-                if c["Id"].startswith(container.id):
-                    disk_usage_mb = c.get("SizeRw", 0) / (1024**2)
-                    break
-        except Exception as e:
-            logger.warning(f"Failed to get disk usage for {container_name}: {e}")
+        now = time.time()
+        if (container_name not in LAST_DISK_UPDATE or 
+            now - LAST_DISK_UPDATE[container_name] > DISK_UPDATE_INTERVAL):
+
+            disk_usage_mb = 0
+            try:
+                # Writable layer
+                df_containers = client.api.df()["Containers"]
+                for c in df_containers:
+                    if c["Id"].startswith(container.id):
+                        disk_usage_mb += c.get("SizeRw", 0) / (1024**2)
+                        break
+                # Mounted volumes
+                mounts = container.attrs.get("Mounts", [])
+                for mount in mounts:
+                    host_path = mount.get("Source")
+                    if host_path and os.path.exists(host_path):
+                        disk_usage_mb += get_directory_size_mb(host_path)
+            except Exception as e:
+                logger.warning(f"Failed to calculate disk usage for {container_name}: {e}")
+
+            DISK_USAGE_CACHE[container_name] = disk_usage_mb
+            LAST_DISK_UPDATE[container_name] = now
+        else:
+            disk_usage_mb = DISK_USAGE_CACHE.get(container_name, 0)
 
         port = get_first_port(container)
         uptime = format_uptime(container)
