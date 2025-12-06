@@ -21,7 +21,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-
 if os.getenv("DEBUG", "0") == "1":
     logger.setLevel(logging.DEBUG)
     logger.debug("Debug logging enabled")
@@ -98,13 +97,19 @@ logger.info(f"Total containers configured: {len(CONTAINERS)}")
 # ------------------------------
 ALLOWED_USERS_RAW = os.getenv("RESTART_ALLOWED_USERS", "")
 EMBED_TITLE = os.getenv("EMBED_TITLE", "Docker Status")
-FIELD_TEMPLATE = os.getenv(
-    "CONTAINER_FIELD_TEMPLATE",
-    "**Description:** {description}\n**Status:** {status}\n**CPU:** {cpu:.2f}%\n**RAM:** {ram} ({ram_percent:.2f}%)\n**Disk:** {disk}\n**Port:** {port}\n**Uptime:** {uptime}\n**Host IP:** {external_ip}"
-)
-FIELD_NAME_TEMPLATE = os.getenv("CONTAINER_FIELD_NAME_TEMPLATE", "{alias} (`{name}`)")
 EMBED_COLOR_RAW = os.getenv("EMBED_COLOR", "0x3498DB")
 MESSAGE_STATE_FILE = os.path.join(CONFIG_DIR, os.getenv("MESSAGE_STATE_FILE", "message_state.json"))
+
+# Load templates and replace literal \n with actual newlines
+FIELD_TEMPLATE = os.getenv(
+    "CONTAINER_FIELD_TEMPLATE",
+    "**Description:** {description}\\n**Status:** {status}\\n**CPU:** {cpu:.2f}%\\n**RAM:** {ram} ({ram_percent:.2f}%)\\n**Disk:** {disk}\\n**Port:** {port}\\n**Uptime:** {uptime}\\n**Host IP:** {external_ip}"
+).replace("\\n", "\n")
+
+FIELD_NAME_TEMPLATE = os.getenv(
+    "CONTAINER_FIELD_NAME_TEMPLATE",
+    "{alias} (`{name}`)"
+).replace("\\n", "\n")
 
 logger.debug(f"RESTART_ALLOWED_USERS: {ALLOWED_USERS_RAW}")
 logger.debug(f"EMBED_TITLE: {EMBED_TITLE}")
@@ -120,7 +125,6 @@ VALID_PLACEHOLDERS = {"alias", "name", "status", "cpu", "ram", "ram_percent", "d
                       "description", "external_ip", "port", "uptime"}
 
 formatter = string.Formatter()
-
 for template_name, template in [("FIELD_TEMPLATE", FIELD_TEMPLATE), ("FIELD_NAME_TEMPLATE", FIELD_NAME_TEMPLATE)]:
     used_placeholders = {fname for _, fname, _, _ in formatter.parse(template) if fname}
     invalid_placeholders = used_placeholders - VALID_PLACEHOLDERS
@@ -196,7 +200,6 @@ def load_message_id():
 # External IP
 # ------------------------------
 EXTERNAL_IP = "N/A"
-
 def fetch_external_ip():
     global EXTERNAL_IP
     try:
@@ -231,7 +234,8 @@ def get_first_port(container):
         for container_port, mappings in ports.items():
             if mappings:
                 host_port = mappings[0].get("HostPort")
-                return f"{host_port}->{container_port}"
+                if host_port:
+                    return host_port  # return only host mapped port
     except Exception:
         return "N/A"
     return "N/A"
@@ -241,7 +245,7 @@ def get_container_stats(container_name):
         container = client.containers.get(container_name)
         stats = container.stats(stream=False)
 
-        # CPU calculation (robust)
+        # CPU calculation
         cpu_percent = 0.0
         try:
             cpu_stats = stats["cpu_stats"]
@@ -299,7 +303,6 @@ def generate_embed():
         description = c["description"]
         stats = get_container_stats(name)
 
-        # Prepare all placeholders
         placeholders = {
             "alias": alias,
             "name": name,
@@ -314,7 +317,6 @@ def generate_embed():
             "external_ip": stats.get("external_ip", "N/A")
         }
 
-        # Render field value and name with all placeholders
         if "error" in stats:
             field_value = f"❌ Error: `{stats['error']}`"
         else:
@@ -373,9 +375,6 @@ async def update_message():
         except Exception as e:
             logger.warning(f"Failed to update message: {e}")
 
-# ------------------------------
-# External IP updater every 6 hours
-# ------------------------------
 @tasks.loop(hours=6)
 async def update_external_ip():
     logger.info("Updating external IP...")
