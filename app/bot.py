@@ -101,6 +101,10 @@ EMBED_TITLE = os.getenv("EMBED_TITLE", "Docker Status")
 EMBED_COLOR_RAW = os.getenv("EMBED_COLOR", "0x3498DB")
 MESSAGE_STATE_FILE = os.path.join(CONFIG_DIR, os.getenv("MESSAGE_STATE_FILE", "message_state.json"))
 
+# Max restarts (per period) and period in seconds
+RESTART_RATE_LIMIT_COUNT = int(os.getenv("RESTART_RATE_LIMIT_COUNT", "2"))
+RESTART_RATE_LIMIT_PERIOD = float(os.getenv("RESTART_RATE_LIMIT_PERIOD", "300"))  # default: 1 hr
+
 # Load templates and replace literal \n with actual newlines
 FIELD_TEMPLATE = os.getenv(
     "CONTAINER_FIELD_TEMPLATE",
@@ -406,6 +410,9 @@ def generate_embed():
 # ------------------------------
 # Discord buttons
 # ------------------------------
+# { container_name: [list of restart timestamps] }
+restart_timestamps = {}
+
 class RestartButton(Button):
     def __init__(self, alias, container, restart_allowed):
         super().__init__(label=f"Restart {alias}", style=discord.ButtonStyle.danger, disabled=not restart_allowed)
@@ -415,18 +422,40 @@ class RestartButton(Button):
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id not in ALLOWED_USERS:
-            logger.warning(f"Unauthorized restart attempt by {interaction.user} for {self.alias}")
             await interaction.response.send_message("⛔ You are not allowed to restart containers.", ephemeral=True)
             return
+
+        # get history for this container
+        now = time.time()
+        history = restart_timestamps.setdefault(self.container, [])
+
+        # clean up old timestamps
+        history = [t for t in history if now - t < RESTART_RATE_LIMIT_PERIOD]
+        restart_timestamps[self.container] = history
+
+        # check if we have hit the limit
+        if len(history) >= RESTART_RATE_LIMIT_COUNT:
+            # calculate wait remaining
+            first = history[0]
+            retry_after = RESTART_RATE_LIMIT_PERIOD - (now - first)
+            await interaction.response.send_message(
+                f"⏳ You’ve hit the restart limit for **{self.alias}**. Try again in {int(retry_after)}s.",
+                ephemeral=True
+            )
+            return
+
+        # record this restart attempt
+        history.append(now)
+        restart_timestamps[self.container] = history
+
+        # perform the restart
         await interaction.response.defer(ephemeral=True)
         try:
             cont = client.containers.get(self.container)
             cont.restart()
-            logger.info(f"Container {self.alias} restarted by {interaction.user}")
-            await interaction.followup.send(f"🔁 Restarted **{self.alias}** (`{self.container}`).", ephemeral=True)
+            await interaction.followup.send(f"✅ Restarted **{self.alias}** (`{self.container}`).", ephemeral=True)
         except Exception as e:
-            logger.error(f"Failed to restart {self.alias}: {e}")
-            await interaction.followup.send(f"❌ Failed to restart **{self.alias}**\nError: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed to restart **{self.alias}**:\n`{e}`", ephemeral=True)
 
 class RestartView(View):
     def __init__(self):
