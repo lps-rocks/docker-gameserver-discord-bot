@@ -7,14 +7,7 @@ import logging
 import asyncio
 import time
 from datetime import datetime, timezone
-from typing import (
-    Any,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    TypedDict,
-)
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 import requests
 import docker
@@ -22,6 +15,7 @@ import discord
 from discord.ext import commands, tasks
 from discord.ui import View, Button
 from dotenv import load_dotenv
+
 
 # ------------------------------
 # Type definitions
@@ -40,18 +34,20 @@ class MessageState(TypedDict, total=False):
 
 StatsDict = Dict[str, Any]
 
+
 # ------------------------------
 # Logging configuration
 # ------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger: logging.Logger = logging.getLogger(__name__)
 if os.getenv("DEBUG", "0") == "1":
     logger.setLevel(logging.DEBUG)
     logger.debug("Debug logging enabled")
+
 
 # ------------------------------
 # Config directory and env
@@ -59,8 +55,9 @@ if os.getenv("DEBUG", "0") == "1":
 CONFIG_DIR: str = "/config"
 
 dotenv_path: str = os.path.join(CONFIG_DIR, ".env")
-logger.debug(f"Loading environment variables from {dotenv_path}")
+logger.debug("Loading environment variables from %s", dotenv_path)
 load_dotenv(dotenv_path)
+
 
 # ------------------------------
 # Required environment variables
@@ -81,56 +78,65 @@ except ValueError:
     logger.critical("DISCORD_CHANNEL_ID must be an integer. Exiting.")
     sys.exit(1)
 
+
 # ------------------------------
 # Parse containers: CONTAINER_1, CONTAINER_2, ...
 # ------------------------------
 container_pattern: re.Pattern[str] = re.compile(r"^CONTAINER_(\d+)$")
-container_entries: List[Tuple[str, str]] = [
-    (key, value)
-    for key, value in os.environ.items()
-    if container_pattern.match(key)
+container_env_entries: List[Tuple[str, str]] = [
+    (env_name, env_value)
+    for env_name, env_value in os.environ.items()
+    if container_pattern.match(env_name)
 ]
 logger.debug(
     "Detected container environment variables: %s",
-    [key for key, _ in container_entries],
+    [env_name for env_name, _ in container_env_entries],
 )
 
-if not container_entries:
+if not container_env_entries:
     logger.critical(
-        "No containers configured. Define environment variables like CONTAINER_1, "
-        "CONTAINER_2, etc. Exiting."
+        "No containers configured. Define environment variables like "
+        "CONTAINER_1, CONTAINER_2, etc. Exiting."
     )
     sys.exit(1)
 
 # Sort by numeric suffix
-container_entries.sort(key=lambda x: int(container_pattern.match(x[0]).group(1)))  # type: ignore[call-arg]
+container_env_entries.sort(
+    key=lambda entry: int(container_pattern.match(entry[0]).group(1))  # type: ignore[call-arg]
+)
 
 CONTAINERS: List[ContainerConfig] = []
-for var_name, entry in container_entries:
+for env_var_name, env_var_value in container_env_entries:
     # alias:docker_name:restart_allowed:description
-    parts: List[str] = entry.split(":", 3)
-    if len(parts) < 2:
+    container_parts: List[str] = env_var_value.split(":", 3)
+    if len(container_parts) < 2:
         logger.critical(
             "Container entry '%s' must have at least alias and docker_name. Exiting.",
-            var_name,
+            env_var_name,
         )
         sys.exit(1)
 
-    alias: str = parts[0].strip()
-    container_name: str = parts[1].strip()
-    restart_allowed: bool = len(parts) > 2 and parts[2].strip().lower() == "yes"
-    description: str = parts[3].strip() if len(parts) > 3 else ""
+    container_alias: str = container_parts[0].strip()
+    container_name: str = container_parts[1].strip()
+    container_restart_allowed: bool = (
+        len(container_parts) > 2
+        and container_parts[2].strip().lower() == "yes"
+    )
+    container_description: str = (
+        container_parts[3].strip() if len(container_parts) > 3 else ""
+    )
 
-    container_info: ContainerConfig = {
-        "alias": alias,
+    container_config: ContainerConfig = {
+        "alias": container_alias,
         "name": container_name,
-        "restart_allowed": restart_allowed,
-        "description": description,
+        "restart_allowed": container_restart_allowed,
+        "description": container_description,
     }
-    CONTAINERS.append(container_info)
-    logger.debug("Parsed container '%s': %s", var_name, container_info)
+    CONTAINERS.append(container_config)
+    logger.debug("Parsed container '%s': %s", env_var_name, container_config)
 
 logger.info("Total containers configured: %d", len(CONTAINERS))
+
 
 # ------------------------------
 # Optional settings
@@ -176,6 +182,7 @@ logger.debug("FIELD_NAME_TEMPLATE: %s", FIELD_NAME_TEMPLATE)
 logger.debug("EMBED_COLOR: %s", EMBED_COLOR_RAW)
 logger.debug("MESSAGE_STATE_FILE: %s", MESSAGE_STATE_FILE)
 
+
 # ------------------------------
 # Template validation
 # ------------------------------
@@ -195,16 +202,22 @@ VALID_PLACEHOLDERS = {
     "status_icon",
 }
 
-formatter: string.Formatter = string.Formatter()
-for template_name, template in [
+template_formatter: string.Formatter = string.Formatter()
+for template_name, template_value in [
     ("FIELD_TEMPLATE", FIELD_TEMPLATE),
     ("FIELD_NAME_TEMPLATE", FIELD_NAME_TEMPLATE),
 ]:
     used_placeholders = {
-        fname for _, fname, _, _ in formatter.parse(template) if fname
+        placeholder_name
+        for _, placeholder_name, _, _ in template_formatter.parse(template_value)
+        if placeholder_name
     }
     invalid_placeholders = used_placeholders - VALID_PLACEHOLDERS
-    logger.debug("%s placeholders detected: %s", template_name, used_placeholders)
+    logger.debug(
+        "%s placeholders detected: %s",
+        template_name,
+        used_placeholders,
+    )
     if invalid_placeholders:
         logger.critical(
             "%s contains invalid placeholders: %s. Exiting.",
@@ -213,6 +226,7 @@ for template_name, template in [
         )
         sys.exit(1)
 
+
 # ------------------------------
 # Embed color
 # ------------------------------
@@ -220,36 +234,40 @@ try:
     EMBED_COLOR: int = int(EMBED_COLOR_RAW, 16)
 except ValueError:
     logger.warning(
-        "Invalid EMBED_COLOR '%s', defaulting to 0x3498DB", EMBED_COLOR_RAW
+        "Invalid EMBED_COLOR '%s', defaulting to 0x3498DB",
+        EMBED_COLOR_RAW,
     )
     EMBED_COLOR = 0x3498DB
+
 
 # ------------------------------
 # Allowed users for restart
 # ------------------------------
 ALLOWED_USERS: set[int] = set()
 if ALLOWED_USERS_RAW:
-    for u in ALLOWED_USERS_RAW.split(","):
-        u = u.strip()
-        if u.isdigit():
-            ALLOWED_USERS.add(int(u))
+    for raw_user_id in ALLOWED_USERS_RAW.split(","):
+        stripped_user_id: str = raw_user_id.strip()
+        if stripped_user_id.isdigit():
+            ALLOWED_USERS.add(int(stripped_user_id))
         else:
             logger.warning(
-                "'%s' in RESTART_ALLOWED_USERS is not a valid Discord ID and will "
-                "be ignored.",
-                u,
+                "'%s' in RESTART_ALLOWED_USERS is not a valid Discord ID "
+                "and will be ignored.",
+                stripped_user_id,
             )
 logger.debug("ALLOWED_USERS set: %s", ALLOWED_USERS)
+
 
 # ------------------------------
 # Docker client
 # ------------------------------
 try:
-    client: docker.DockerClient = docker.from_env()
+    docker_client: docker.DockerClient = docker.from_env()
     logger.info("Docker client initialized successfully")
-except Exception as e:
-    logger.critical("Failed to connect to Docker: %s. Exiting.", e)
+except Exception as docker_error:
+    logger.critical("Failed to connect to Docker: %s. Exiting.", docker_error)
     sys.exit(1)
+
 
 # ------------------------------
 # Utility helpers
@@ -267,28 +285,29 @@ def format_size(value_mb: float) -> str:
 def save_message_id(channel_id: int, message_id: int) -> None:
     state: MessageState = {"channel_id": channel_id, "message_id": message_id}
     try:
-        with open(MESSAGE_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f)
+        with open(MESSAGE_STATE_FILE, "w", encoding="utf-8") as state_file:
+            json.dump(state, state_file)
         logger.debug(
             "Saved message state: channel=%d, message=%d",
             channel_id,
             message_id,
         )
-    except Exception as e:
-        logger.warning("Failed to save message state: %s", e)
+    except Exception as save_error:
+        logger.warning("Failed to save message state: %s", save_error)
 
 
 def load_message_id() -> Tuple[Optional[int], Optional[int]]:
     if os.path.exists(MESSAGE_STATE_FILE):
         try:
-            with open(MESSAGE_STATE_FILE, "r", encoding="utf-8") as f:
-                data_raw: Any = json.load(f)
-            data: MessageState = dict(data_raw)
-            logger.debug("Loaded message state: %s", data)
-            return data.get("channel_id"), data.get("message_id")
-        except Exception as e:
-            logger.warning("Failed to load message state: %s", e)
+            with open(MESSAGE_STATE_FILE, "r", encoding="utf-8") as state_file:
+                loaded_data_raw: Any = json.load(state_file)
+            loaded_state: MessageState = dict(loaded_data_raw)
+            logger.debug("Loaded message state: %s", loaded_state)
+            return loaded_state.get("channel_id"), loaded_state.get("message_id")
+        except Exception as load_error:
+            logger.warning("Failed to load message state: %s", load_error)
     return None, None
+
 
 # ------------------------------
 # External IP (blocking -> wrapped in async)
@@ -303,26 +322,27 @@ def _fetch_external_ip_sync() -> None:
         if response.status_code == 200:
             EXTERNAL_IP = response.text.strip()
             logger.info("External IP updated: %s", EXTERNAL_IP)
-    except Exception as e:
-        logger.warning("Failed to fetch external IP: %s", e)
+    except Exception as ip_error:
+        logger.warning("Failed to fetch external IP: %s", ip_error)
 
 
 async def fetch_external_ip_async() -> None:
     """Async wrapper for external IP fetch."""
     await asyncio.to_thread(_fetch_external_ip_sync)
 
+
 # ------------------------------
 # Container helpers
 # ------------------------------
-def format_uptime(container: docker.models.containers.Container) -> str:
+def format_uptime(container_obj: docker.models.containers.Container) -> str:
     try:
-        started_at: str = container.attrs["State"]["StartedAt"]
+        started_at: str = container_obj.attrs["State"]["StartedAt"]
         start_time: datetime = datetime.fromisoformat(
             started_at.replace("Z", "+00:00")
         )
-        delta = datetime.now(timezone.utc) - start_time
-        days: int = delta.days
-        seconds: int = delta.seconds
+        uptime_delta = datetime.now(timezone.utc) - start_time
+        days: int = uptime_delta.days
+        seconds: int = uptime_delta.seconds
         hours: int = seconds // 3600
         minutes: int = (seconds % 3600) // 60
         return f"{days}d {hours}h {minutes}m"
@@ -330,14 +350,14 @@ def format_uptime(container: docker.models.containers.Container) -> str:
         return "N/A"
 
 
-def get_first_port(container: docker.models.containers.Container) -> str:
+def get_first_port(container_obj: docker.models.containers.Container) -> str:
     try:
-        ports: Dict[str, Any] = container.attrs.get(
+        port_mappings: Dict[str, Any] = container_obj.attrs.get(
             "NetworkSettings", {}
         ).get("Ports", {})
-        for _, mappings in ports.items():
-            if mappings:
-                host_port: Optional[str] = mappings[0].get("HostPort")
+        for _, host_mappings in port_mappings.items():
+            if host_mappings:
+                host_port: Optional[str] = host_mappings[0].get("HostPort")
                 if host_port:
                     return host_port
     except Exception:
@@ -345,19 +365,22 @@ def get_first_port(container: docker.models.containers.Container) -> str:
     return "N/A"
 
 
-def calculate_cpu_percent_from_stats(stats1: Dict[str, Any], stats2: Dict[str, Any]) -> float:
+def calculate_cpu_percent_from_stats(
+    first_stats: Dict[str, Any],
+    second_stats: Dict[str, Any],
+) -> float:
     try:
         cpu_delta: int = (
-            stats2["cpu_stats"]["cpu_usage"]["total_usage"]
-            - stats1["cpu_stats"]["cpu_usage"]["total_usage"]
+            second_stats["cpu_stats"]["cpu_usage"]["total_usage"]
+            - first_stats["cpu_stats"]["cpu_usage"]["total_usage"]
         )
         system_delta: int = (
-            stats2["cpu_stats"]["system_cpu_usage"]
-            - stats1["cpu_stats"].get("system_cpu_usage", 0)
+            second_stats["cpu_stats"]["system_cpu_usage"]
+            - first_stats["cpu_stats"].get("system_cpu_usage", 0)
         )
-        percpu_count: int = stats1["cpu_stats"].get(
+        percpu_count: int = first_stats["cpu_stats"].get(
             "online_cpus",
-            len(stats2["cpu_stats"]["cpu_usage"].get("percpu_usage", [])),
+            len(second_stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [])),
         )
         if system_delta > 0 and cpu_delta > 0:
             return (cpu_delta / system_delta) * percpu_count * 100.0
@@ -370,28 +393,26 @@ def get_directory_size_mb(path: str) -> float:
     """
     Return the *actual* disk usage in MB for a directory tree.
 
-    Uses st_blocks * 512 (POSIX block size) when available, which reflects
-    allocated space on disk rather than just logical file size (st_size).
+    Uses st_blocks * 512 (POSIX block size units) when available, which
+    reflects allocated space on disk rather than just logical file size.
     """
     total_bytes: int = 0
 
     for dirpath, _dirnames, filenames in os.walk(path):
-        for f in filenames:
+        for filename in filenames:
             try:
-                fp: str = os.path.join(dirpath, f)
-                st = os.stat(fp, follow_symlinks=False)
+                file_path: str = os.path.join(dirpath, filename)
+                stat_result = os.stat(file_path, follow_symlinks=False)
 
-                # Prefer actual allocated size (blocks * 512 bytes) if present.
-                if hasattr(st, "st_blocks") and st.st_blocks is not None:
-                    total_bytes += st.st_blocks * 512
+                if hasattr(stat_result, "st_blocks") and stat_result.st_blocks is not None:
+                    total_bytes += stat_result.st_blocks * 512
                 else:
-                    # Fallback to logical size if st_blocks is missing
-                    total_bytes += st.st_size
+                    total_bytes += stat_result.st_size
             except Exception:
                 # Skip files that can't be accessed
                 pass
 
-    return total_bytes / (1024 ** 2)
+    return total_bytes / (1024**2)
 
 
 DISK_UPDATE_INTERVAL: float = 6 * 60 * 60  # 6 hours
@@ -400,69 +421,80 @@ DISK_USAGE_CACHE: Dict[str, float] = {}  # {container_name: mb}
 
 
 def _get_container_disk_usage_sync(
-    container: docker.models.containers.Container,
+    container_obj: docker.models.containers.Container,
 ) -> float:
     """Blocking disk usage computation (to be called from a thread)."""
     total_mb: float = 0.0
-    logger.debug("[disk] Calculating disk usage for %s", container.name)
+    logger.debug("[disk] Calculating disk usage for %s", container_obj.name)
 
     # 1. Writable layer
     try:
-        df_containers: List[Dict[str, Any]] = client.api.df()["Containers"]
-        for c in df_containers:
-            if c["Id"].startswith(container.id):
-                layer_mb: float = c.get("SizeRw", 0) / (1024**2)
+        docker_df: Dict[str, Any] = docker_client.api.df()
+        container_summaries: List[Dict[str, Any]] = docker_df.get(
+            "Containers", []
+        )
+        for container_summary in container_summaries:
+            if container_summary["Id"].startswith(container_obj.id):
+                writable_layer_mb: float = (
+                    container_summary.get("SizeRw", 0) / (1024**2)
+                )
                 logger.debug(
                     "[disk:%s] Writable layer: %.2f MB",
-                    container.name,
-                    layer_mb,
+                    container_obj.name,
+                    writable_layer_mb,
                 )
-                total_mb += layer_mb
+                total_mb += writable_layer_mb
                 break
-    except Exception as e:
+    except Exception as writable_error:
         logger.warning(
             "[disk:%s] Failed to get writable layer size: %s",
-            container.name,
-            e,
+            container_obj.name,
+            writable_error,
         )
 
     # 2. Mounted volumes
     try:
-        mounts: List[Dict[str, Any]] = container.attrs.get("Mounts", [])
-        for mount in mounts:
-            host_path: Optional[str] = mount.get("Source")
+        mount_info_list: List[Dict[str, Any]] = container_obj.attrs.get(
+            "Mounts", []
+        )
+        for mount_info in mount_info_list:
+            host_path: Optional[str] = mount_info.get("Source")
             if host_path and os.path.exists(host_path):
-                vol_mb: float = get_directory_size_mb(host_path)
+                volume_mb: float = get_directory_size_mb(host_path)
                 logger.debug(
                     "[disk:%s] Volume %s: %.2f MB",
-                    container.name,
+                    container_obj.name,
                     host_path,
-                    vol_mb,
+                    volume_mb,
                 )
-                total_mb += vol_mb
-    except Exception as e:
+                total_mb += volume_mb
+    except Exception as volume_error:
         logger.warning(
-            "[disk:%s] Failed to get volumes size: %s", container.name, e
+            "[disk:%s] Failed to get volumes size: %s",
+            container_obj.name,
+            volume_error,
         )
 
     # 3. Image size
     try:
-        image = client.images.get(container.image.id)
-        image_mb: float = image.attrs.get("Size", 0) / (1024**2)
+        image_obj = docker_client.images.get(container_obj.image.id)
+        image_size_mb: float = image_obj.attrs.get("Size", 0) / (1024**2)
         logger.debug(
             "[disk:%s] Image size: %.2f MB",
-            container.name,
-            image_mb,
+            container_obj.name,
+            image_size_mb,
         )
-        total_mb += image_mb
-    except Exception as e:
+        total_mb += image_size_mb
+    except Exception as image_error:
         logger.warning(
-            "[disk:%s] Failed to get image size: %s", container.name, e
+            "[disk:%s] Failed to get image size: %s",
+            container_obj.name,
+            image_error,
         )
 
     logger.debug(
         "[disk:%s] Total calculated: %.2f MB",
-        container.name,
+        container_obj.name,
         total_mb,
     )
     return total_mb
@@ -474,86 +506,99 @@ def _get_container_stats_sync(container_name: str) -> StatsDict:
     This is executed in a thread via asyncio.to_thread.
     """
     try:
-        container: docker.models.containers.Container = client.containers.get(
-            container_name
+        container_obj: docker.models.containers.Container = (
+            docker_client.containers.get(container_name)
         )
-        stats_stream = container.stats(decode=True)
+        stats_stream = container_obj.stats(decode=True)
 
         # CPU usage: sample over ~1s
-        stats1: Dict[str, Any] = next(stats_stream)
+        first_stats: Dict[str, Any] = next(stats_stream)
         time.sleep(1)
-        stats2: Dict[str, Any] = next(stats_stream)
-        cpu_percent: float = calculate_cpu_percent_from_stats(stats1, stats2)
+        second_stats: Dict[str, Any] = next(stats_stream)
+        cpu_percent: float = calculate_cpu_percent_from_stats(
+            first_stats,
+            second_stats,
+        )
 
         # RAM usage
-        mem_usage_mb: float = stats1["memory_stats"]["usage"] / (1024**2)
-        mem_limit_mb: float = stats1["memory_stats"]["limit"] / (1024**2)
+        mem_usage_mb: float = first_stats["memory_stats"]["usage"] / (1024**2)
+        mem_limit_mb: float = first_stats["memory_stats"]["limit"] / (1024**2)
         mem_percent: float = (
             (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0.0
         )
 
         # Disk usage (refresh every 6 hours)
-        now: float = time.time()
+        current_time: float = time.time()
         if (
             container_name not in LAST_DISK_UPDATE
-            or now - LAST_DISK_UPDATE[container_name] > DISK_UPDATE_INTERVAL
+            or current_time - LAST_DISK_UPDATE[container_name] > DISK_UPDATE_INTERVAL
         ):
-            logger.debug("[disk:%s] Refreshing cached disk usage...", container_name)
-            disk_usage_mb: float = _get_container_disk_usage_sync(container)
+            logger.debug(
+                "[disk:%s] Refreshing cached disk usage...",
+                container_name,
+            )
+            disk_usage_mb: float = _get_container_disk_usage_sync(container_obj)
             DISK_USAGE_CACHE[container_name] = disk_usage_mb
-            LAST_DISK_UPDATE[container_name] = now
+            LAST_DISK_UPDATE[container_name] = current_time
         else:
             disk_usage_mb = DISK_USAGE_CACHE.get(container_name, 0.0)
-            age: float = now - LAST_DISK_UPDATE[container_name]
+            cache_age_seconds: float = (
+                current_time - LAST_DISK_UPDATE[container_name]
+            )
             logger.debug(
                 "[disk:%s] Using cached disk usage (%.0fs old)",
                 container_name,
-                age,
+                cache_age_seconds,
             )
 
-        port: str = get_first_port(container)
-        uptime: str = format_uptime(container)
+        host_port: str = get_first_port(container_obj)
+        uptime_str: str = format_uptime(container_obj)
         external_ip: str = EXTERNAL_IP
 
-        health: str = container.attrs["State"].get("Health", {}).get("Status", "")
-        status: str = container.status
+        health_status: str = container_obj.attrs["State"].get(
+            "Health", {}
+        ).get("Status", "")
+        container_status: str = container_obj.status
 
-        if status == "running" and health == "healthy":
+        if container_status == "running" and health_status == "healthy":
             status_icon: str = "🟢"
-        elif status == "exited" or (status == "running" and health == "unhealthy"):
+        elif container_status == "exited" or (
+            container_status == "running" and health_status == "unhealthy"
+        ):
             status_icon = "🔴"
-        elif status in ["starting", "restarting"] or (
-            status == "running" and health == "starting"
+        elif container_status in ["starting", "restarting"] or (
+            container_status == "running" and health_status == "starting"
         ):
             status_icon = "🟠"
-        elif status == "paused":
+        elif container_status == "paused":
             status_icon = "🟡"
-        elif status == "dead":
+        elif container_status == "dead":
             status_icon = "❌"
         else:
             status_icon = "❓"
 
         result: StatsDict = {
-            "status": status,
-            "health": health,
+            "status": container_status,
+            "health": health_status,
             "status_icon": status_icon,
             "cpu": cpu_percent,
             "ram": format_size(mem_usage_mb),
             "ram_percent": mem_percent,
             "disk": format_size(disk_usage_mb),
-            "port": port,
-            "uptime": uptime,
+            "port": host_port,
+            "uptime": uptime_str,
             "external_ip": external_ip,
         }
         return result
-    except Exception as e:
-        logger.error("Failed to get stats for %s: %s", container_name, e)
-        return {"error": str(e)}
+    except Exception as stats_error:
+        logger.error("Failed to get stats for %s: %s", container_name, stats_error)
+        return {"error": str(stats_error)}
 
 
 async def get_container_stats(container_name: str) -> StatsDict:
     """Async wrapper for container stats using a thread executor."""
     return await asyncio.to_thread(_get_container_stats_sync, container_name)
+
 
 # ------------------------------
 # Embed generation (async)
@@ -567,22 +612,23 @@ async def generate_embed() -> discord.Embed:
     )
 
     # Gather stats concurrently for all containers
-    stats_tasks: List[asyncio.Future[StatsDict]] = [
-        asyncio.ensure_future(get_container_stats(c["name"])) for c in CONTAINERS
+    stats_tasks: List[asyncio.Task[StatsDict]] = [
+        asyncio.create_task(get_container_stats(container_cfg["name"]))
+        for container_cfg in CONTAINERS
     ]
     stats_results: List[StatsDict] = await asyncio.gather(
         *stats_tasks, return_exceptions=False
     )
 
-    for container_cfg, stats in zip(CONTAINERS, stats_results):
+    for container_cfg, stats_dict in zip(CONTAINERS, stats_results):
         alias: str = container_cfg["alias"]
-        name: str = container_cfg["name"]
+        container_name: str = container_cfg["name"]
         description: str = container_cfg["description"]
 
-        if "error" in stats:
-            placeholders: Dict[str, Any] = {
+        if "error" in stats_dict:
+            placeholder_values: Dict[str, Any] = {
                 "alias": alias,
-                "name": name,
+                "name": container_name,
                 "status": "N/A",
                 "health": "N/A",
                 "status_icon": "❌",
@@ -595,30 +641,31 @@ async def generate_embed() -> discord.Embed:
                 "description": description,
                 "external_ip": "N/A",
             }
-            field_name: str = FIELD_NAME_TEMPLATE.format(**placeholders)
-            field_value: str = f"❌ Error: `{stats['error']}`"
+            field_name: str = FIELD_NAME_TEMPLATE.format(**placeholder_values)
+            field_value: str = f"❌ Error: `{stats_dict['error']}`"
         else:
-            placeholders = {
+            placeholder_values = {
                 "alias": alias,
-                "name": name,
-                "status": stats.get("status", "N/A"),
-                "health": stats.get("health", "N/A"),
-                "status_icon": stats.get("status_icon", "❌"),
-                "cpu": stats.get("cpu", 0.0),
-                "ram": stats.get("ram", "N/A"),
-                "ram_percent": stats.get("ram_percent", 0.0),
-                "disk": stats.get("disk", "N/A"),
-                "port": stats.get("port", "N/A"),
-                "uptime": stats.get("uptime", "N/A"),
+                "name": container_name,
+                "status": stats_dict.get("status", "N/A"),
+                "health": stats_dict.get("health", "N/A"),
+                "status_icon": stats_dict.get("status_icon", "❌"),
+                "cpu": stats_dict.get("cpu", 0.0),
+                "ram": stats_dict.get("ram", "N/A"),
+                "ram_percent": stats_dict.get("ram_percent", 0.0),
+                "disk": stats_dict.get("disk", "N/A"),
+                "port": stats_dict.get("port", "N/A"),
+                "uptime": stats_dict.get("uptime", "N/A"),
                 "description": description,
-                "external_ip": stats.get("external_ip", "N/A"),
+                "external_ip": stats_dict.get("external_ip", "N/A"),
             }
-            field_name = FIELD_NAME_TEMPLATE.format(**placeholders)
-            field_value = FIELD_TEMPLATE.format(**placeholders)
+            field_name = FIELD_NAME_TEMPLATE.format(**placeholder_values)
+            field_value = FIELD_TEMPLATE.format(**placeholder_values)
 
         embed.add_field(name=field_name, value=field_value, inline=False)
 
     return embed
+
 
 # ------------------------------
 # Discord Buttons and Views
@@ -628,34 +675,46 @@ restart_timestamps: Dict[str, List[float]] = {}
 
 
 class RestartButton(Button):
-    def __init__(self, alias: str, container: str, restart_allowed: bool) -> None:
+    def __init__(self, alias: str, container_name: str, restart_allowed: bool) -> None:
         super().__init__(
             label=f"Restart {alias}",
             style=discord.ButtonStyle.danger,
             disabled=not restart_allowed,
         )
-        self.container: str = container
+        self.container_name: str = container_name
         self.alias: str = alias
         self.restart_allowed: bool = restart_allowed
 
     async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        if interaction.user is None or interaction.user.id not in ALLOWED_USERS:  # type: ignore[union-attr]
+        if (
+            interaction.user is None
+            or interaction.user.id not in ALLOWED_USERS  # type: ignore[union-attr]
+        ):
             await interaction.response.send_message(
                 "⛔ You are not allowed to restart containers.",
                 ephemeral=True,
             )
             return
 
-        now: float = time.time()
-        history: List[float] = restart_timestamps.setdefault(self.container, [])
+        current_time: float = time.time()
+        container_history: List[float] = restart_timestamps.setdefault(
+            self.container_name,
+            [],
+        )
 
         # Clean up old timestamps
-        history = [t for t in history if now - t < RESTART_RATE_LIMIT_PERIOD]
-        restart_timestamps[self.container] = history
+        filtered_history: List[float] = [
+            timestamp
+            for timestamp in container_history
+            if current_time - timestamp < RESTART_RATE_LIMIT_PERIOD
+        ]
+        restart_timestamps[self.container_name] = filtered_history
 
-        if len(history) >= RESTART_RATE_LIMIT_COUNT:
-            first: float = history[0]
-            retry_after: float = RESTART_RATE_LIMIT_PERIOD - (now - first)
+        if len(filtered_history) >= RESTART_RATE_LIMIT_COUNT:
+            first_timestamp: float = filtered_history[0]
+            retry_after: float = RESTART_RATE_LIMIT_PERIOD - (
+                current_time - first_timestamp
+            )
             await interaction.response.send_message(
                 (
                     f"⏳ You’ve hit the restart limit for **{self.alias}**. "
@@ -666,26 +725,26 @@ class RestartButton(Button):
             return
 
         # Record this restart attempt
-        history.append(now)
-        restart_timestamps[self.container] = history
+        filtered_history.append(current_time)
+        restart_timestamps[self.container_name] = filtered_history
 
         # Perform the restart in a thread (since docker is blocking)
         await interaction.response.defer(ephemeral=True)
         try:
             def _restart_container() -> None:
-                cont: docker.models.containers.Container = client.containers.get(
-                    self.container
+                container_obj: docker.models.containers.Container = (
+                    docker_client.containers.get(self.container_name)
                 )
-                cont.restart()
+                container_obj.restart()
 
             await asyncio.to_thread(_restart_container)
             await interaction.followup.send(
-                f"✅ Restarted **{self.alias}** (`{self.container}`).",
+                f"✅ Restarted **{self.alias}** (`{self.container_name}`).",
                 ephemeral=True,
             )
-        except Exception as e:
+        except Exception as restart_error:
             await interaction.followup.send(
-                f"❌ Failed to restart **{self.alias}**:\n`{e}`",
+                f"❌ Failed to restart **{self.alias}**:\n`{restart_error}`",
                 ephemeral=True,
             )
 
@@ -693,14 +752,15 @@ class RestartButton(Button):
 class RestartView(View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
-        for c in CONTAINERS:
+        for container_cfg in CONTAINERS:
             self.add_item(
                 RestartButton(
-                    alias=c["alias"],
-                    container=c["name"],
-                    restart_allowed=c["restart_allowed"],
+                    alias=container_cfg["alias"],
+                    container_name=container_cfg["name"],
+                    restart_allowed=container_cfg["restart_allowed"],
                 )
             )
+
 
 # ------------------------------
 # Discord Bot
@@ -719,8 +779,8 @@ async def update_message() -> None:
             embed: discord.Embed = await generate_embed()
             await message_to_update.edit(embed=embed, view=RestartView())
             logger.debug("Updated message %d", message_to_update.id)
-        except Exception as e:
-            logger.warning("Failed to update message: %s", e)
+        except Exception as update_error:
+            logger.warning("Failed to update message: %s", update_error)
 
 
 @tasks.loop(hours=6)
@@ -738,8 +798,11 @@ async def on_ready() -> None:
     logger.info("Logged in as %s", bot.user)
 
     saved_channel_id, saved_message_id = load_message_id()
-    channel = bot.get_channel(CHANNEL_ID)
-    if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread, discord.DMChannel)):
+    target_channel = bot.get_channel(CHANNEL_ID)
+    if target_channel is None or not isinstance(
+        target_channel,
+        (discord.TextChannel, discord.Thread, discord.DMChannel),
+    ):
         logger.critical("Channel not found or wrong type. Exiting.")
         await bot.close()
         sys.exit(1)
@@ -747,22 +810,28 @@ async def on_ready() -> None:
     # Try to resume editing an existing message
     if saved_channel_id == CHANNEL_ID and saved_message_id:
         try:
-            message_to_update = await channel.fetch_message(saved_message_id)  # type: ignore[arg-type]
+            message_to_update = await target_channel.fetch_message(  # type: ignore[arg-type]
+                saved_message_id
+            )
             logger.info("Resuming updates on message %d", saved_message_id)
-        except Exception as e:
-            logger.warning("Failed to fetch saved message: %s", e)
+        except Exception as fetch_error:
+            logger.warning("Failed to fetch saved message: %s", fetch_error)
             message_to_update = None
 
     # If no message to resume, create a new one
     if message_to_update is None:
         try:
-            embed = await generate_embed()
-            view = RestartView()
-            message_to_update = await channel.send(embed=embed, view=view)  # type: ignore[arg-type]
-            save_message_id(CHANNEL_ID, message_to_update.id)
-            logger.info("Created new message %d", message_to_update.id)
-        except Exception as e:
-            logger.critical("Failed to send new message: %s. Exiting.", e)
+            initial_embed = await generate_embed()
+            initial_view = RestartView()
+            sent_message = await target_channel.send(  # type: ignore[arg-type]
+                embed=initial_embed,
+                view=initial_view,
+            )
+            message_to_update = sent_message
+            save_message_id(CHANNEL_ID, sent_message.id)
+            logger.info("Created new message %d", sent_message.id)
+        except Exception as send_error:
+            logger.critical("Failed to send new message: %s. Exiting.", send_error)
             await bot.close()
             sys.exit(1)
 
