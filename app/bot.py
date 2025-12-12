@@ -271,6 +271,7 @@ LAST_DISK_UPDATE = {}  # {container_name: timestamp}
 DISK_USAGE_CACHE = {}  # {container_name: mb}
 
 def get_container_disk_usage(container):
+    logger.debug(f"[disk] Calculating disk usage for {container.name}")
     total_mb = 0
 
     # 1. Writable layer
@@ -278,10 +279,12 @@ def get_container_disk_usage(container):
         df_containers = client.api.df()["Containers"]
         for c in df_containers:
             if c["Id"].startswith(container.id):
-                total_mb += c.get("SizeRw", 0) / (1024**2)
+                layer_mb = c.get("SizeRw", 0) / (1024**2)
+                logger.debug(f"[disk:{container.name}] Writable layer: {layer_mb:.2f} MB")
+                total_mb += layer_mb
                 break
     except Exception as e:
-        logger.warning(f"Failed to get writable layer size for {container.name}: {e}")
+        logger.warning(f"[disk:{container.name}] Failed to get writable layer size: {e}")
 
     # 2. Mounted volumes
     try:
@@ -289,18 +292,24 @@ def get_container_disk_usage(container):
         for mount in mounts:
             host_path = mount.get("Source")
             if host_path and os.path.exists(host_path):
-                total_mb += get_directory_size_mb(host_path)
+                vol_mb = get_directory_size_mb(host_path)
+                logger.debug(f"[disk:{container.name}] Volume {host_path}: {vol_mb:.2f} MB")
+                total_mb += vol_mb
     except Exception as e:
-        logger.warning(f"Failed to get volumes size for {container.name}: {e}")
+        logger.warning(f"[disk:{container.name}] Failed to get volumes size: {e}")
 
     # 3. Image size
     try:
         image = client.images.get(container.image.id)
-        total_mb += image.attrs.get("Size", 0) / (1024**2)
+        image_mb = image.attrs.get("Size", 0) / (1024**2)
+        logger.debug(f"[disk:{container.name}] Image size: {image_mb:.2f} MB")
+        total_mb += image_mb
     except Exception as e:
-        logger.warning(f"Failed to get image size for {container.name}: {e}")
+        logger.warning(f"[disk:{container.name}] Failed to get image size: {e}")
 
+    logger.debug(f"[disk:{container.name}] Total calculated: {total_mb:.2f} MB")
     return total_mb
+
 
 
 def get_container_stats(container_name):
@@ -328,12 +337,16 @@ def get_container_stats(container_name):
         now = time.time()
         if (container_name not in LAST_DISK_UPDATE or 
             now - LAST_DISK_UPDATE[container_name] > DISK_UPDATE_INTERVAL):
-            
+        
+            logger.debug(f"[disk:{container_name}] Refreshing cached disk usage...")
             disk_usage_mb = get_container_disk_usage(container)
             DISK_USAGE_CACHE[container_name] = disk_usage_mb
             LAST_DISK_UPDATE[container_name] = now
         else:
             disk_usage_mb = DISK_USAGE_CACHE.get(container_name, 0)
+            age = now - LAST_DISK_UPDATE[container_name]
+            logger.debug(f"[disk:{container_name}] Using cached disk usage ({age:.0f}s old)")
+
         
         port = get_first_port(container)
         uptime = format_uptime(container)
