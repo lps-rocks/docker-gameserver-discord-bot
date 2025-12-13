@@ -519,22 +519,26 @@ class DockerStatsService:
                 self.client.containers.get(container_name)
             )
             stats_stream = container_obj.stats(decode=True)
+            if container_obj.status == "running":
+              # CPU usage: sample over ~1s
+              first_stats: Dict[str, Any] = next(stats_stream)
+              time.sleep(1)
+              second_stats: Dict[str, Any] = next(stats_stream)
+              cpu_percent: float = self.calculate_cpu_percent_from_stats(
+                  first_stats,
+                  second_stats,
+              )
 
-            # CPU usage: sample over ~1s
-            first_stats: Dict[str, Any] = next(stats_stream)
-            time.sleep(1)
-            second_stats: Dict[str, Any] = next(stats_stream)
-            cpu_percent: float = self.calculate_cpu_percent_from_stats(
-                first_stats,
-                second_stats,
-            )
-
-            # RAM usage
-            mem_usage_mb: float = first_stats["memory_stats"]["usage"] / (1024**2)
-            mem_limit_mb: float = first_stats["memory_stats"]["limit"] / (1024**2)
-            mem_percent: float = (
-                (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0.0
-            )
+              # RAM usage
+              mem_usage_mb: float = first_stats["memory_stats"]["usage"] / (1024**2)
+              mem_limit_mb: float = first_stats["memory_stats"]["limit"] / (1024**2)
+              mem_percent: float = (
+                  (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0.0
+              )
+            else:
+              cpu_percent: float = 0.0
+              mem_usage_mb: int = 0
+              mem_percent: int = 0
 
             # Disk usage (refresh every 6 hours)
             current_time: float = time.time()
@@ -572,7 +576,7 @@ class DockerStatsService:
             ).get("Status", "")
             container_status: str = container_obj.status
 
-            if container_status == "running" and health_status == "healthy":
+            if container_status == "running" and (health_status == "healthy" or health_status == ""):
                 status_icon: str = "🟢"
             elif container_status == "exited" or (
                 container_status == "running" and health_status == "unhealthy"
