@@ -570,7 +570,7 @@ class DockerStatsService:
             ).get("Status", "")
             container_status: str = container_obj.status
 
-            if container_status == "running" and health_status == "healthy":
+            if container_status == "running" and (health_status == "healthy" or health_status == ""):
                 status_icon: str = "🟢"
             elif container_status == "exited" or (
                     container_status == "running" and health_status == "unhealthy"
