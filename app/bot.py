@@ -1,17 +1,17 @@
+import asyncio
+import json
+import logging
 import os
 import re
-import json
 import string
 import sys
-import logging
-import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
-import requests
-import docker
 import discord
+import docker
+import requests
 from discord.ext import commands, tasks
 from discord.ui import View, Button
 from dotenv import load_dotenv
@@ -25,6 +25,7 @@ class ContainerConfig(TypedDict):
     name: str
     restart_allowed: bool
     description: str
+    port: str
 
 
 class MessageState(TypedDict, total=False):
@@ -33,7 +34,6 @@ class MessageState(TypedDict, total=False):
 
 
 StatsDict = Dict[str, Any]
-
 
 # ------------------------------
 # Logging configuration
@@ -127,14 +127,16 @@ class AppConfig:
 
         self._validate_templates()
 
-    def _load_required(self, key: str) -> str:
+    @staticmethod
+    def _load_required(key: str) -> str:
         value = os.getenv(key)
         if not value:
             logger.critical("%s is not set. Exiting.", key)
             sys.exit(1)
         return value
 
-    def _load_containers(self) -> List[ContainerConfig]:
+    @staticmethod
+    def _load_containers() -> List[ContainerConfig]:
         container_pattern: re.Pattern[str] = re.compile(r"^CONTAINER_(\d+)$")
         container_env_entries: List[Tuple[str, str]] = [
             (env_name, env_value)
@@ -161,27 +163,29 @@ class AppConfig:
 
         containers: List[ContainerConfig] = []
         for env_var_name, env_var_value in container_env_entries:
-            container_parts: List[str] = env_var_value.split(":", 3)
-            if len(container_parts) < 2:
+            container_parts: List[str] = env_var_value.split(":", 4)
+            if len(container_parts) < 3:
                 logger.critical(
-                    "Container entry '%s' must have at least alias and docker_name. Exiting.",
+                    "Container entry '%s' must have at least alias, docker_name, and port. Exiting.",
                     env_var_name,
                 )
                 sys.exit(1)
 
             container_alias: str = container_parts[0].strip()
             container_name: str = container_parts[1].strip()
+            container_port: str = container_parts[2].strip()
             container_restart_allowed: bool = (
-                len(container_parts) > 2
-                and container_parts[2].strip().lower() == "yes"
+                    len(container_parts) > 3
+                    and container_parts[3].strip().lower() == "yes"
             )
             container_description: str = (
-                container_parts[3].strip() if len(container_parts) > 3 else ""
+                container_parts[4].strip() if len(container_parts) > 4 else ""
             )
 
             container_config: ContainerConfig = {
                 "alias": container_alias,
                 "name": container_name,
+                "port": container_port,
                 "restart_allowed": container_restart_allowed,
                 "description": container_description,
             }
@@ -191,7 +195,8 @@ class AppConfig:
         logger.info("Total containers configured: %d", len(containers))
         return containers
 
-    def _parse_embed_color(self, raw: str) -> int:
+    @staticmethod
+    def _parse_embed_color(raw: str) -> int:
         try:
             return int(raw, 16)
         except ValueError:
@@ -201,7 +206,8 @@ class AppConfig:
             )
             return 0x3498DB
 
-    def _parse_allowed_users(self, raw: str) -> set[int]:
+    @staticmethod
+    def _parse_allowed_users(raw: str) -> set[int]:
         allowed: set[int] = set()
         if raw:
             for raw_user_id in raw.split(","):
@@ -346,6 +352,7 @@ class DockerStatsService:
 
     @staticmethod
     def format_uptime(container_obj: docker.models.containers.Container) -> str:
+        # noinspection PyBroadException
         try:
             started_at: str = container_obj.attrs["State"]["StartedAt"]
             start_time: datetime = datetime.fromisoformat(
@@ -361,33 +368,19 @@ class DockerStatsService:
             return "N/A"
 
     @staticmethod
-    def get_first_port(container_obj: docker.models.containers.Container) -> str:
-        try:
-            port_mappings: Dict[str, Any] = container_obj.attrs.get(
-                "NetworkSettings", {}
-            ).get("Ports", {})
-            for _, host_mappings in port_mappings.items():
-                if host_mappings:
-                    host_port: Optional[str] = host_mappings[0].get("HostPort")
-                    if host_port:
-                        return host_port
-        except Exception:
-            return "N/A"
-        return "N/A"
-
-    @staticmethod
     def calculate_cpu_percent_from_stats(
-        first_stats: Dict[str, Any],
-        second_stats: Dict[str, Any],
+            first_stats: Dict[str, Any],
+            second_stats: Dict[str, Any],
     ) -> float:
+        # noinspection PyBroadException
         try:
             cpu_delta: int = (
-                second_stats["cpu_stats"]["cpu_usage"]["total_usage"]
-                - first_stats["cpu_stats"]["cpu_usage"]["total_usage"]
+                    second_stats["cpu_stats"]["cpu_usage"]["total_usage"]
+                    - first_stats["cpu_stats"]["cpu_usage"]["total_usage"]
             )
             system_delta: int = (
-                second_stats["cpu_stats"]["system_cpu_usage"]
-                - first_stats["cpu_stats"].get("system_cpu_usage", 0)
+                    second_stats["cpu_stats"]["system_cpu_usage"]
+                    - first_stats["cpu_stats"].get("system_cpu_usage", 0)
             )
             percpu_count: int = first_stats["cpu_stats"].get(
                 "online_cpus",
@@ -415,6 +408,7 @@ class DockerStatsService:
 
         for dirpath, _dirnames, filenames in os.walk(path):
             for filename in filenames:
+                # noinspection PyBroadException
                 try:
                     file_path: str = os.path.join(dirpath, filename)
                     stat_result = os.stat(file_path, follow_symlinks=False)
@@ -427,11 +421,11 @@ class DockerStatsService:
                     # Skip files that can't be accessed
                     pass
 
-        return total_bytes / (1024**2)
+        return total_bytes / (1024 ** 2)
 
     def _get_container_disk_usage_sync(
-        self,
-        container_obj: docker.models.containers.Container,
+            self,
+            container_obj: docker.models.containers.Container,
     ) -> float:
         """Blocking disk usage computation (to be called from a thread)."""
         total_mb: float = 0.0
@@ -446,7 +440,7 @@ class DockerStatsService:
             for container_summary in container_summaries:
                 if container_summary["Id"].startswith(container_obj.id):
                     writable_layer_mb: float = (
-                        container_summary.get("SizeRw", 0) / (1024**2)
+                            container_summary.get("SizeRw", 0) / (1024 ** 2)
                     )
                     logger.debug(
                         "[disk:%s] Writable layer: %.2f MB",
@@ -488,7 +482,7 @@ class DockerStatsService:
         # 3. Image size
         try:
             image_obj = self.client.images.get(container_obj.image.id)
-            image_size_mb: float = image_obj.attrs.get("Size", 0) / (1024**2)
+            image_size_mb: float = image_obj.attrs.get("Size", 0) / (1024 ** 2)
             logger.debug(
                 "[disk:%s] Image size: %.2f MB",
                 container_obj.name,
@@ -519,33 +513,34 @@ class DockerStatsService:
                 self.client.containers.get(container_name)
             )
             stats_stream = container_obj.stats(decode=True)
-            if container_obj.status == "running":
-              # CPU usage: sample over ~1s
-              first_stats: Dict[str, Any] = next(stats_stream)
-              time.sleep(1)
-              second_stats: Dict[str, Any] = next(stats_stream)
-              cpu_percent: float = self.calculate_cpu_percent_from_stats(
-                  first_stats,
-                  second_stats,
-              )
 
-              # RAM usage
-              mem_usage_mb: float = first_stats["memory_stats"]["usage"] / (1024**2)
-              mem_limit_mb: float = first_stats["memory_stats"]["limit"] / (1024**2)
-              mem_percent: float = (
-                  (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0.0
-              )
+            # CPU usage: sample over ~1s
+            if container_obj.status in ["running", "starting"]:
+                first_stats: Dict[str, Any] = next(stats_stream)
+                time.sleep(1)
+                second_stats: Dict[str, Any] = next(stats_stream)
+                cpu_percent: float = self.calculate_cpu_percent_from_stats(
+                    first_stats,
+                    second_stats,
+                )
+
+                # RAM usage
+                mem_usage_mb: float = first_stats["memory_stats"]["usage"] / (1024 ** 2)
+                mem_limit_mb: float = first_stats["memory_stats"]["limit"] / (1024 ** 2)
+                mem_percent: float = (
+                    (mem_usage_mb / mem_limit_mb * 100) if mem_limit_mb > 0 else 0.0
+                )
             else:
-              cpu_percent: float = 0.0
-              mem_usage_mb: int = 0
-              mem_percent: int = 0
+                cpu_percent = 0.0
+                mem_usage_mb = 0.0
+                mem_percent = 0.0
 
             # Disk usage (refresh every 6 hours)
             current_time: float = time.time()
             if (
-                container_name not in self.last_disk_update
-                or current_time - self.last_disk_update[container_name]
-                > self.disk_update_interval
+                    container_name not in self.last_disk_update
+                    or current_time - self.last_disk_update[container_name]
+                    > self.disk_update_interval
             ):
                 logger.debug(
                     "[disk:%s] Refreshing cached disk usage...",
@@ -559,7 +554,7 @@ class DockerStatsService:
             else:
                 disk_usage_mb = self.disk_usage_cache.get(container_name, 0.0)
                 cache_age_seconds: float = (
-                    current_time - self.last_disk_update[container_name]
+                        current_time - self.last_disk_update[container_name]
                 )
                 logger.debug(
                     "[disk:%s] Using cached disk usage (%.0fs old)",
@@ -567,7 +562,6 @@ class DockerStatsService:
                     cache_age_seconds,
                 )
 
-            host_port: str = self.get_first_port(container_obj)
             uptime_str: str = self.format_uptime(container_obj)
             external_ip: str = self.external_ip_service.ip
 
@@ -576,14 +570,14 @@ class DockerStatsService:
             ).get("Status", "")
             container_status: str = container_obj.status
 
-            if container_status == "running" and (health_status == "healthy" or health_status == ""):
+            if container_status == "running" and health_status == "healthy":
                 status_icon: str = "🟢"
             elif container_status == "exited" or (
-                container_status == "running" and health_status == "unhealthy"
+                    container_status == "running" and health_status == "unhealthy"
             ):
                 status_icon = "🔴"
             elif container_status in ["starting", "restarting"] or (
-                container_status == "running" and health_status == "starting"
+                    container_status == "running" and health_status == "starting"
             ):
                 status_icon = "🟠"
             elif container_status == "paused":
@@ -601,7 +595,6 @@ class DockerStatsService:
                 "ram": self.format_size(mem_usage_mb),
                 "ram_percent": mem_percent,
                 "disk": self.format_size(disk_usage_mb),
-                "port": host_port,
                 "uptime": uptime_str,
                 "external_ip": external_ip,
             }
@@ -619,11 +612,11 @@ class DockerStatsService:
 # ------------------------------
 class RestartManager:
     def __init__(
-        self,
-        docker_client: docker.DockerClient,
-        allowed_users: set[int],
-        rate_limit_count: int,
-        rate_limit_period: float,
+            self,
+            docker_client: docker.DockerClient,
+            allowed_users: set[int],
+            rate_limit_count: int,
+            rate_limit_period: float,
     ) -> None:
         self.client = docker_client
         self.allowed_users = allowed_users
@@ -633,9 +626,9 @@ class RestartManager:
         self.restart_timestamps: Dict[str, List[float]] = {}
 
     def can_restart(
-        self,
-        container_name: str,
-        user_id: int,
+            self,
+            container_name: str,
+            user_id: int,
     ) -> Tuple[bool, Optional[int]]:
         if user_id not in self.allowed_users:
             return False, None
@@ -679,9 +672,9 @@ class RestartManager:
 # ------------------------------
 class EmbedBuilder:
     def __init__(
-        self,
-        config: AppConfig,
-        stats_service: DockerStatsService,
+            self,
+            config: AppConfig,
+            stats_service: DockerStatsService,
     ) -> None:
         self.config = config
         self.stats_service = stats_service
@@ -690,7 +683,7 @@ class EmbedBuilder:
         embed: discord.Embed = discord.Embed(
             title=self.config.embed_title,
             color=self.config.embed_color,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         stats_tasks: List[asyncio.Task[StatsDict]] = [
@@ -704,11 +697,12 @@ class EmbedBuilder:
         )
 
         for container_cfg, stats_dict in zip(
-            self.config.containers, stats_results
+                self.config.containers, stats_results
         ):
             alias: str = container_cfg["alias"]
             container_name: str = container_cfg["name"]
             description: str = container_cfg["description"]
+            port: str = container_cfg["port"]
 
             if "error" in stats_dict:
                 placeholder_values: Dict[str, Any] = {
@@ -741,7 +735,7 @@ class EmbedBuilder:
                     "ram": stats_dict.get("ram", "N/A"),
                     "ram_percent": stats_dict.get("ram_percent", 0.0),
                     "disk": stats_dict.get("disk", "N/A"),
-                    "port": stats_dict.get("port", "N/A"),
+                    "port": port,
                     "uptime": stats_dict.get("uptime", "N/A"),
                     "description": description,
                     "external_ip": stats_dict.get("external_ip", "N/A"),
@@ -763,17 +757,14 @@ class EmbedBuilder:
 # ------------------------------
 class RestartButton(Button):
     def __init__(
-        self,
-        alias: str,
-        container_name: str,
-        restart_allowed: bool,
-        restart_manager: RestartManager,
+            self,
+            alias: str,
+            container_name: str,
+            restart_allowed: bool,
+            restart_manager: RestartManager,
     ) -> None:
-        super().__init__(
-            label=f"Restart {alias}",
-            style=discord.ButtonStyle.danger,
-            disabled=not restart_allowed,
-        )
+        # noinspection PyTypeChecker
+        super().__init__(label=f"Restart {alias}", style=discord.ButtonStyle.danger, disabled=not restart_allowed, )
         self.alias: str = alias
         self.container_name: str = container_name
         self.restart_manager: RestartManager = restart_manager
@@ -839,13 +830,13 @@ class RestartView(View):
 # ------------------------------
 class DockerStatusBot(commands.Bot):
     def __init__(
-        self,
-        config: AppConfig,
-        message_state_store: MessageStateStore,
-        external_ip_service: ExternalIPService,
-        stats_service: DockerStatsService,
-        embed_builder: EmbedBuilder,
-        restart_manager: RestartManager,
+            self,
+            config: AppConfig,
+            message_state_store: MessageStateStore,
+            external_ip_service: ExternalIPService,
+            stats_service: DockerStatsService,
+            embed_builder: EmbedBuilder,
+            restart_manager: RestartManager,
     ) -> None:
         intents: discord.Intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
@@ -888,8 +879,8 @@ class DockerStatusBot(commands.Bot):
         saved_channel_id, saved_message_id = self.message_state_store.load_message_id()
         target_channel = self.get_channel(self.config.channel_id)
         if target_channel is None or not isinstance(
-            target_channel,
-            (discord.TextChannel, discord.Thread, discord.DMChannel),
+                target_channel,
+                (discord.TextChannel, discord.Thread, discord.DMChannel),
         ):
             logger.critical("Channel not found or wrong type. Exiting.")
             await self.close()
@@ -916,14 +907,10 @@ class DockerStatusBot(commands.Bot):
                     view=initial_view,
                 )
                 self.message_to_update = sent_message
-                self.message_state_store.save_message_id(
-                    self.config.channel_id, sent_message.id
-                )
+                self.message_state_store.save_message_id(self.config.channel_id, sent_message.id)
                 logger.info("Created new message %d", sent_message.id)
             except Exception as send_error:
-                logger.critical(
-                    "Failed to send new message: %s. Exiting.", send_error
-                )
+                logger.critical("Failed to send new message: %s. Exiting.", send_error)
                 await self.close()
                 sys.exit(1)
 
