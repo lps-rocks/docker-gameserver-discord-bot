@@ -29,6 +29,7 @@ class ContainerConfig(TypedDict):
     restart_allowed: bool
     description: str
     port: str
+    query_port: str
     a2s_enabled: bool
 
 
@@ -199,50 +200,22 @@ class AppConfig:
 
         containers: List[ContainerConfig] = []
         for env_var_name, env_var_value in container_env_entries:
-            container_parts: List[str] = env_var_value.split(":", 5)
-            if len(container_parts) < 3:
+            container_parts: List[str] = env_var_value.split(":", 6)
+            if len(container_parts) < 7:
                 logger.critical(
-                    "Container entry '%s' must have at least alias, docker_name, and port. Exiting.",
+                    "Container entry '%s' configuration not properly formatted. Exiting.",
                     env_var_name,
                 )
                 sys.exit(1)
-
-            container_alias: str = container_parts[0].strip()
-            container_name: str = container_parts[1].strip()
-            container_port: str = container_parts[2].strip()
-
-            container_restart_allowed: bool = (
-                len(container_parts) > 3 and container_parts[3].strip().lower() == "yes"
-            )
-
-            # Per-container A2S enable/disable (backward compatible):
-            # Old format (<=5 parts): alias:name:port:restart_allowed:description
-            # New format (6 parts):   alias:name:port:restart_allowed:a2s_enabled:description
-            # Additionally allowed (5 parts): alias:name:port:restart_allowed:a2s_enabled   (no description)
-            container_a2s_enabled: bool = True
-            container_description: str = ""
-
-            if len(container_parts) == 5:
-                fifth = container_parts[4].strip()
-                if fifth.lower() in {"yes", "no"}:
-                    container_a2s_enabled = fifth.lower() != "no"
-                    container_description = ""
-                else:
-                    container_a2s_enabled = True
-                    container_description = fifth
-            elif len(container_parts) >= 6:
-                a2s_raw = container_parts[4].strip()
-                if a2s_raw:
-                    container_a2s_enabled = a2s_raw.lower() != "no"
-                container_description = container_parts[5].strip()
-
+         
             container_config: ContainerConfig = {
-                "alias": container_alias,
-                "name": container_name,
-                "port": container_port,
-                "restart_allowed": container_restart_allowed,
-                "a2s_enabled": container_a2s_enabled,
-                "description": container_description,
+                "alias": container_parts[0].strip(),
+                "name": container_parts[1].strip(),
+                "port": container_parts[2].strip(),
+                "query_port": container_parts[3].strip(),
+                "restart_allowed": container_parts[4].strip().lower() == "yes",
+                "a2s_enabled": container_parts[5].strip().lower() == "yes",
+                "description": container_parts[6].strip(),
             }
 
             containers.append(container_config)
@@ -306,6 +279,7 @@ class AppConfig:
             "description",
             "external_ip",
             "port",
+            "query_port",
             "uptime",
             "health",
             "status_icon",
@@ -686,7 +660,7 @@ class DockerStatsService:
 
         # If docker stats failed, still try to attach an a2s error placeholder consistently.
         host = self.external_ip_service.ip
-        port_raw = (container_cfg.get("port") or "").strip()
+        port_raw = (container_cfg.get("query_port") or "").strip()
 
         try:
             port = int(port_raw)
@@ -834,7 +808,7 @@ class EmbedBuilder:
             container_name: str = container_cfg["name"]
             description_template: str = container_cfg["description"]
             port: str = container_cfg["port"]
-
+            query_port: str = container_cfg["query_port"]
             # Pull baseline values
             external_ip_val = stats_dict.get("external_ip", "N/A")
 
@@ -844,6 +818,7 @@ class EmbedBuilder:
                 "name": container_name,
                 "port": port,
                 "description": description_template,
+                "query_port": query_port,
             }
             stats_ns = {
                 "status": stats_dict.get("status", "N/A"),
@@ -870,6 +845,7 @@ class EmbedBuilder:
                 "ram_percent": stats_ns["ram_percent"],
                 "disk": stats_ns["disk"],
                 "port": port,
+                "query_port": query_port,
                 "uptime": stats_ns["uptime"],
                 "description": description_template,
                 "external_ip": external_ip_val,
