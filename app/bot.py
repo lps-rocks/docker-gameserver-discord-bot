@@ -29,6 +29,7 @@ class ContainerConfig(TypedDict):
     restart_allowed: bool
     description: str
     port: str
+    a2s_enabled: bool
 
 
 class MessageState(TypedDict, total=False):
@@ -154,6 +155,16 @@ class AppConfig:
 
         self._validate_templates()
 
+        # Cache whether templates reference A2S placeholders (used for warnings)
+        self.template_uses_a2s_placeholders: bool = self._templates_use_namespace("a2s")
+        if self.template_uses_a2s_placeholders:
+            disabled_aliases = [c["alias"] for c in self.containers if not c.get("a2s_enabled", True)]
+            if disabled_aliases:
+                logger.warning(
+                    "A2S placeholders are used in templates, but A2S is disabled for: %s",
+                    ", ".join(disabled_aliases),
+                )
+
     @staticmethod
     def _load_required(key: str) -> str:
         value = os.getenv(key)
@@ -188,7 +199,7 @@ class AppConfig:
 
         containers: List[ContainerConfig] = []
         for env_var_name, env_var_value in container_env_entries:
-            container_parts: List[str] = env_var_value.split(":", 4)
+            container_parts: List[str] = env_var_value.split(":", 5)
             if len(container_parts) < 3:
                 logger.critical(
                     "Container entry '%s' must have at least alias, docker_name, and port. Exiting.",
@@ -203,13 +214,34 @@ class AppConfig:
             container_restart_allowed: bool = (
                 len(container_parts) > 3 and container_parts[3].strip().lower() == "yes"
             )
-            container_description: str = container_parts[4].strip() if len(container_parts) > 4 else ""
+
+            # Per-container A2S enable/disable (backward compatible):
+            # Old format (<=5 parts): alias:name:port:restart_allowed:description
+            # New format (6 parts):   alias:name:port:restart_allowed:a2s_enabled:description
+            # Additionally allowed (5 parts): alias:name:port:restart_allowed:a2s_enabled   (no description)
+            container_a2s_enabled: bool = True
+            container_description: str = ""
+
+            if len(container_parts) == 5:
+                fifth = container_parts[4].strip()
+                if fifth.lower() in {"yes", "no"}:
+                    container_a2s_enabled = fifth.lower() != "no"
+                    container_description = ""
+                else:
+                    container_a2s_enabled = True
+                    container_description = fifth
+            elif len(container_parts) >= 6:
+                a2s_raw = container_parts[4].strip()
+                if a2s_raw:
+                    container_a2s_enabled = a2s_raw.lower() != "no"
+                container_description = container_parts[5].strip()
 
             container_config: ContainerConfig = {
                 "alias": container_alias,
                 "name": container_name,
                 "port": container_port,
                 "restart_allowed": container_restart_allowed,
+                "a2s_enabled": container_a2s_enabled,
                 "description": container_description,
             }
 
@@ -242,6 +274,16 @@ class AppConfig:
                     )
         logger.debug("ALLOWED_USERS set: %s", allowed)
         return allowed
+
+    def _templates_use_namespace(self, namespace: str) -> bool:
+        template_formatter: string.Formatter = string.Formatter()
+        for template_value in [self.field_template, self.field_name_template]:
+            for _, placeholder_name, _, _ in template_formatter.parse(template_value):
+                if not placeholder_name:
+                    continue
+                if placeholder_name == namespace or placeholder_name.startswith(namespace + "."):
+                    return True
+        return False
 
     def _validate_templates(self) -> None:
         """
@@ -636,6 +678,11 @@ class DockerStatsService:
           port = container_cfg["port"]
         """
         stats = await self.get_container_stats(container_cfg["name"])
+        # Per-container A2S toggle: skip querying entirely when disabled
+        if not container_cfg.get("a2s_enabled", True):
+            stats["a2s"] = None
+            return stats
+
 
         # If docker stats failed, still try to attach an a2s error placeholder consistently.
         host = self.external_ip_service.ip
@@ -712,6 +759,8 @@ class EmbedBuilder:
         self.config = config
         self.stats_service = stats_service
 
+        self._warned_a2s_disabled: set[str] = set()
+
     async def build_embed(self) -> discord.Embed:
         embed: discord.Embed = discord.Embed(
             title=self.config.embed_title,
@@ -727,6 +776,19 @@ class EmbedBuilder:
 
         for container_cfg, stats_dict in zip(self.config.containers, stats_results):
             alias: str = container_cfg["alias"]
+            # Validation warning: templates reference A2S placeholders but this container has A2S disabled
+            if (
+                self.config.template_uses_a2s_placeholders
+                and not container_cfg.get("a2s_enabled", True)
+                and alias not in self._warned_a2s_disabled
+            ):
+                logger.warning(
+                    "A2S is disabled for container '%s' but templates reference {a2s.*} placeholders. "
+                    "Those placeholders will render as empty for this container.",
+                    alias,
+                )
+                self._warned_a2s_disabled.add(alias)
+
             container_name: str = container_cfg["name"]
             description_template: str = container_cfg["description"]
             port: str = container_cfg["port"]
