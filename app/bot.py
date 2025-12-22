@@ -693,9 +693,49 @@ class DockerStatsService:
         except Exception:
             port = -1
 
+        a2s_enabled = container_cfg.get("a2s_enabled", True)
+        logger.debug(
+            "[a2s:%s] enabled=%s host=%s port_raw=%s parsed_port=%s",
+            container_cfg.get("name"),
+            a2s_enabled,
+            host,
+            port_raw,
+            port,
+        )
+
+        # Per-container A2S toggle
+        if not a2s_enabled:
+            logger.debug("[a2s:%s] Skipping A2S query (disabled)", container_cfg.get("name"))
+            stats["a2s"] = None
+            return stats
+
+        # A2S enabled: query if possible
         if host and host != "N/A" and port > 0:
             stats["a2s"] = await self.a2s_service.query(host, port)
+            if isinstance(stats.get("a2s"), dict) and stats["a2s"].get("error"):
+                logger.debug(
+                    "[a2s:%s] Query completed with error: %s",
+                    container_cfg.get("name"),
+                    stats["a2s"].get("error"),
+                )
+            else:
+                # Best-effort: log server name if present
+                server_name = None
+                try:
+                    server_name = (stats["a2s"] or {}).get("info", {}).get("server_name")
+                except Exception:
+                    server_name = None
+
+                logger.debug(
+                    "[a2s:%s] Query completed OK%s",
+                    container_cfg.get("name"),
+                    f" (server_name={server_name})" if server_name else "",
+                )
         else:
+            logger.debug(
+                "[a2s:%s] Skipping A2S query (missing external_ip or invalid port)",
+                container_cfg.get("name"),
+            )
             stats["a2s"] = {"error": "missing external_ip or invalid port", "info": None, "rules": None, "players": None}
 
         return stats
