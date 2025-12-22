@@ -718,7 +718,7 @@ class DockerStatsService:
                     container_cfg.get("name"),
                     stats["a2s"].get("error"),
                 )
-                logger.debug("[a2s:%s] %s", stats.get("a2s"))
+                logger.debug("[a2s:%s] %s", container_cfg.get("name"), stats.get("a2s"))
             else:
                 # Best-effort: log server name if present
                 server_name = None
@@ -732,7 +732,7 @@ class DockerStatsService:
                     container_cfg.get("name"),
                     f" (server_name={server_name})" if server_name else "",
                 )
-                logger.debug("[a2s:%s] %s", stats.get("a2s"))
+                logger.debug("[a2s:%s] %s", container_cfg.get("name"), stats.get("a2s"))
         else:
             logger.debug(
                 "[a2s:%s] Skipping A2S query (missing external_ip or invalid port)",
