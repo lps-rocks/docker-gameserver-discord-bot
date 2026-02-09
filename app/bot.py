@@ -1002,20 +1002,6 @@ class RestartButton(Button):
                 ephemeral=True,
             )
 
-
-class RestartView(View):
-    def __init__(self, config: AppConfig, restart_manager: RestartManager) -> None:
-        super().__init__(timeout=None)
-        for container_cfg in config.containers:
-            self.add_item(
-                RestartButton(
-                    alias=container_cfg["alias"],
-                    container_name=container_cfg["name"],
-                    restart_allowed=container_cfg["restart_allowed"],
-                    restart_manager=restart_manager,
-                )
-            )
-            
 class ContainerActionButton(Button):
     def __init__(
         self,
