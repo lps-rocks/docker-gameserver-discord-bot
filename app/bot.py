@@ -897,7 +897,14 @@ class EmbedBuilder:
 
         return embed
 
-
+class LabelButton(Button):
+    def __init__(self, text: str, row: int):
+        super().__init__(
+            label=text,
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+            row=row,
+        )
 # ------------------------------
 # Discord UI (Restart button / view)
 # ------------------------------
@@ -920,8 +927,15 @@ class RestartView(View):
             is_running = status == "running"
             allowed = cfg["restart_allowed"]
 
+            self.add_item(
+                LabelButton(
+                    text=f"Server: {cfg['alias']}",
+                    row=row,
+                )
+            )
+            
             self.add_item(ContainerActionButton(
-                label="Start",
+                label=f"Start",
                 style=discord.ButtonStyle.success,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
@@ -932,7 +946,7 @@ class RestartView(View):
             ))
 
             self.add_item(ContainerActionButton(
-                label="Stop",
+                label=f"Stop",
                 style=discord.ButtonStyle.secondary,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
@@ -943,7 +957,7 @@ class RestartView(View):
             ))
 
             self.add_item(ContainerActionButton(
-                label="Restart",
+                label=f"Restart",
                 style=discord.ButtonStyle.danger,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
