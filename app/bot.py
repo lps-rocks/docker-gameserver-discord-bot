@@ -935,7 +935,7 @@ class RestartView(View):
             )
             
             self.add_item(ContainerActionButton(
-                label=f"▶️",
+                label=f"Start",
                 style=discord.ButtonStyle.success,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
@@ -946,7 +946,7 @@ class RestartView(View):
             ))
 
             self.add_item(ContainerActionButton(
-                label=f"⏹️",
+                label=f"Stop",
                 style=discord.ButtonStyle.secondary,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
@@ -957,7 +957,7 @@ class RestartView(View):
             ))
 
             self.add_item(ContainerActionButton(
-                label=f"🔁",
+                label=f"Restart",
                 style=discord.ButtonStyle.danger,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
