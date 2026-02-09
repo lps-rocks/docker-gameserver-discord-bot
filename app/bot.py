@@ -14,7 +14,7 @@ import discord
 import docker
 import requests
 from discord.ext import commands, tasks
-from discord.ui import Button, View
+from discord.ui import Button, View, Modal, TextInput
 from dotenv import load_dotenv
 from dotty_dict import dotty
 
@@ -715,7 +715,16 @@ class DockerStatsService:
             stats["a2s"] = {"error": "missing external_ip or invalid port", "info": None, "rules": None, "players": None}
 
         return stats
+        
+    def get_container_status_sync(self, container_name: str) -> str:
+        try:
+            container = self.client.containers.get(container_name)
+            return container.status
+        except Exception:
+            return "unknown"
 
+    async def get_container_status(self, container_name: str) -> str:
+        return await asyncio.to_thread(self.get_container_status_sync, container_name)
 
 # ------------------------------
 # Restart manager
@@ -734,36 +743,32 @@ class RestartManager:
         self.allowed_users = allowed_users
         self.rate_limit_count = rate_limit_count
         self.rate_limit_period = rate_limit_period
-        # { container_name: [timestamps] }
-        self.restart_timestamps: Dict[str, List[float]] = {}
+        self.timestamps: Dict[str, List[float]] = {}
 
-    def can_restart(self, container_name: str, user_id: int) -> Tuple[bool, Optional[int]]:
+    def can_act(self, container_name: str, user_id: int) -> Tuple[bool, Optional[int]]:
         if user_id not in self.allowed_users:
             return False, None
 
-        now: float = time.time()
-        container_history: List[float] = self.restart_timestamps.setdefault(container_name, [])
-        filtered_history: List[float] = [
-            timestamp for timestamp in container_history if now - timestamp < self.rate_limit_period
-        ]
-        self.restart_timestamps[container_name] = filtered_history
+        now = time.time()
+        history = self.timestamps.setdefault(container_name, [])
+        history = [t for t in history if now - t < self.rate_limit_period]
+        self.timestamps[container_name] = history
 
-        if len(filtered_history) >= self.rate_limit_count:
-            first_timestamp: float = filtered_history[0]
-            retry_after: int = int(self.rate_limit_period - (now - first_timestamp))
+        if len(history) >= self.rate_limit_count:
+            retry_after = int(self.rate_limit_period - (now - history[0]))
             return False, retry_after
 
-        filtered_history.append(now)
-        self.restart_timestamps[container_name] = filtered_history
+        history.append(now)
         return True, None
 
-    async def restart_container(self, container_name: str) -> None:
-        def _restart() -> None:
-            container_obj: docker.models.containers.Container = self.client.containers.get(container_name)
-            container_obj.restart()
+    async def start_container(self, name: str) -> None:
+        await asyncio.to_thread(lambda: self.client.containers.get(name).start())
 
-        await asyncio.to_thread(_restart)
+    async def stop_container(self, name: str) -> None:
+        await asyncio.to_thread(lambda: self.client.containers.get(name).stop())
 
+    async def restart_container(self, name: str) -> None:
+        await asyncio.to_thread(lambda: self.client.containers.get(name).restart())
 
 # ------------------------------
 # Embed builder
@@ -897,6 +902,56 @@ class EmbedBuilder:
 # Discord UI (Restart button / view)
 # ------------------------------
 
+class RestartView(View):
+    def __init__(
+        self,
+        config,
+        manager: RestartManager,
+        stats_service,
+    ):
+        super().__init__(timeout=None)
+        self.config = config
+        self.manager = manager
+        self.stats_service = stats_service
+
+    async def setup(self):
+        for row, cfg in enumerate(self.config.containers):
+            status = await self.stats_service.get_container_status(cfg["name"])
+            is_running = status == "running"
+            allowed = cfg["restart_allowed"]
+
+            self.add_item(ContainerActionButton(
+                label="Start",
+                style=discord.ButtonStyle.success,
+                alias=cfg["alias"],
+                container_name=cfg["name"],
+                action="start",
+                enabled=allowed and not is_running,
+                row=row,
+                manager=self.manager,
+            ))
+
+            self.add_item(ContainerActionButton(
+                label="Stop",
+                style=discord.ButtonStyle.secondary,
+                alias=cfg["alias"],
+                container_name=cfg["name"],
+                action="stop",
+                enabled=allowed and is_running,
+                row=row,
+                manager=self.manager,
+            ))
+
+            self.add_item(ContainerActionButton(
+                label="Restart",
+                style=discord.ButtonStyle.danger,
+                alias=cfg["alias"],
+                container_name=cfg["name"],
+                action="restart",
+                enabled=allowed and is_running,
+                row=row,
+                manager=self.manager,
+            ))
 
 class RestartButton(Button):
     def __init__(
@@ -960,7 +1015,98 @@ class RestartView(View):
                     restart_manager=restart_manager,
                 )
             )
+            
+class ContainerActionButton(Button):
+    def __init__(
+        self,
+        *,
+        label: str,
+        style: discord.ButtonStyle,
+        alias: str,
+        container_name: str,
+        action: str,
+        enabled: bool,
+        row: int,
+        manager: RestartManager,
+    ):
+        super().__init__(label=label, style=style, disabled=not enabled, row=row)
+        self.alias = alias
+        self.container_name = container_name
+        self.action = action
+        self.manager = manager
 
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user is None:
+            await interaction.response.send_message("⛔ Unknown user.", ephemeral=True)
+            return
+
+        allowed, retry_after = self.manager.can_act(self.container_name, interaction.user.id)
+        if not allowed:
+            msg = (
+                "⛔ You are not allowed to manage containers."
+                if retry_after is None
+                else f"⏳ Rate limited. Try again in {retry_after}s."
+            )
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
+
+        if self.action == "stop":
+            await interaction.response.send_modal(
+                StopConfirmModal(self.alias, self.container_name, self.manager)
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if self.action == "start":
+                await self.manager.start_container(self.container_name)
+            elif self.action == "restart":
+                await self.manager.restart_container(self.container_name)
+
+            await interaction.followup.send(
+                f"✅ **{self.action.title()}** executed for **{self.alias}**.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Failed to {self.action} **{self.alias}**:\n`{e}`",
+                ephemeral=True,
+            )
+
+class StopConfirmModal(Modal, title="Confirm Stop"):
+    def __init__(self, alias: str, container_name: str, manager: RestartManager):
+        super().__init__()
+        self.alias = alias
+        self.container_name = container_name
+        self.manager = manager
+
+        self.confirm = TextInput(
+            label=f'Type STOP to confirm stopping "{alias}"',
+            placeholder="STOP",
+            required=True,
+        )
+        self.add_item(self.confirm)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if self.confirm.value.strip().upper() != "STOP":
+            await interaction.response.send_message(
+                "❌ Confirmation failed. Container not stopped.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self.manager.stop_container(self.container_name)
+            await interaction.followup.send(
+                f"🛑 **{self.alias}** has been stopped.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Failed to stop **{self.alias}**:\n`{e}`",
+                ephemeral=True,
+            )
 
 # ------------------------------
 # Discord Bot
@@ -997,7 +1143,8 @@ class DockerStatusBot(commands.Bot):
         if self.message_to_update:
             try:
                 embed: discord.Embed = await self.embed_builder.build_embed()
-                view = RestartView(self.config, self.restart_manager)
+                view = RestartView(self.config, self.restart_manager, self.stats_service)
+                await view.setup()
                 await self.message_to_update.edit(embed=embed, view=view)
                 logger.debug("Updated message %d", self.message_to_update.id)
             except Exception as update_error:
@@ -1034,7 +1181,8 @@ class DockerStatusBot(commands.Bot):
         if self.message_to_update is None:
             try:
                 initial_embed = await self.embed_builder.build_embed()
-                initial_view = RestartView(self.config, self.restart_manager)
+                initial_view = RestartView(self.config, self.restart_manager, self.stats_service)
+                await initial_view.setup()
                 sent_message = await target_channel.send(  # type: ignore[arg-type]
                     embed=initial_embed,
                     view=initial_view,
