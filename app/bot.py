@@ -929,13 +929,13 @@ class RestartView(View):
 
             self.add_item(
                 LabelButton(
-                    text=f"Server: {cfg['alias']}",
+                    text=f"{cfg['alias']}",
                     row=row,
                 )
             )
             
             self.add_item(ContainerActionButton(
-                label=f"Start",
+                label=f"▶️",
                 style=discord.ButtonStyle.success,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
@@ -946,7 +946,7 @@ class RestartView(View):
             ))
 
             self.add_item(ContainerActionButton(
-                label=f"Stop",
+                label=f"⏹️",
                 style=discord.ButtonStyle.secondary,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
@@ -957,7 +957,7 @@ class RestartView(View):
             ))
 
             self.add_item(ContainerActionButton(
-                label=f"Restart",
+                label=f"🔁",
                 style=discord.ButtonStyle.danger,
                 alias=cfg["alias"],
                 container_name=cfg["name"],
